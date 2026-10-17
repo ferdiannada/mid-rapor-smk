@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+/* 
+  Material Design 3 (M3) Design Tokens 
+  Diimplementasikan menggunakan Tailwind v4 @theme directive 
+*/
+@theme {
+  /* M3 Colors (Educational Theme - Academic Blue) */
+  --color-m3-primary: #0059B2;
+  --color-m3-on-primary: #FFFFFF;
+  --color-m3-primary-container: #D6E3FF;
+  --color-m3-on-primary-container: #001B3D;
+  
+  --color-m3-secondary: #006874;
+  --color-m3-on-secondary: #FFFFFF;
+  --color-m3-secondary-container: #CBE6FF;
+  --color-m3-on-secondary-container: #001E2E;
+
+  --color-m3-tertiary: #5D5F65;
+  --color-m3-on-tertiary: #FFFFFF;
+  --color-m3-tertiary-container: #E2E2E9;
+  --color-m3-on-tertiary-container: #1A1C20;
+
+  --color-m3-error: #BA1A1A;
+  --color-m3-on-error: #FFFFFF;
+  --color-m3-error-container: #FFDAD6;
+  --color-m3-on-error-container: #410002;
+
+  /* M3 Tonal Surface Containers */
+  --color-m3-surface: #F8FAFF;
+  --color-m3-on-surface: #191C20;
+  --color-m3-surface-variant: #DFE2EB;
+  --color-m3-on-surface-variant: #43474E;
+  
+  --color-m3-surface-container-lowest: #FFFFFF;
+  --color-m3-surface-container-low: #F2F5FB;
+  --color-m3-surface-container: #EBEFF6;
+  --color-m3-surface-container-high: #E5E9F0;
+  --color-m3-surface-container-highest: #DFE3EA;
+  
+  --color-m3-outline: #73777F;
+  --color-m3-outline-variant: #C3C6CF;
+
+  /* M3 Tonal Elevations */
+  --shadow-m3-elevation-1: 0px 1px 2px 0px rgba(0, 0, 0, 0.15), 0px 1px 3px 1px rgba(0, 0, 0, 0.08);
+  --shadow-m3-elevation-2: 0px 1px 2px 0px rgba(0, 0, 0, 0.15), 0px 2px 6px 2px rgba(0, 0, 0, 0.08);
+  --shadow-m3-elevation-3: 0px 1px 3px 0px rgba(0, 0, 0, 0.15), 0px 4px 8px 3px rgba(0, 0, 0, 0.08);
+  --shadow-m3-elevation-4: 0px 2px 3px 0px rgba(0, 0, 0, 0.15), 0px 6px 10px 4px rgba(0, 0, 0, 0.08);
+  --shadow-m3-elevation-5: 0px 4px 4px 0px rgba(0, 0, 0, 0.15), 0px 8px 12px 6px rgba(0, 0, 0, 0.08);
+
+  /* M3 Motion/Easing (Animations) */
+  --ease-m3-standard: cubic-bezier(0.2, 0.0, 0, 1.0);
+  --ease-m3-standard-decelerate: cubic-bezier(0, 0, 0, 1.0);
+  --ease-m3-standard-accelerate: cubic-bezier(0.3, 0, 1.0, 1.0);
+  --ease-m3-emphasized: cubic-bezier(0.2, 0.0, 0, 1.0);
+  --ease-m3-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+  --ease-m3-emphasized-accelerate: cubic-bezier(0.3, 0.0, 0.8, 0.15);
+
+  --animate-m3-enter: m3-enter 250ms var(--ease-m3-emphasized-decelerate) forwards;
+}
+
+@keyframes m3-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', 'Roboto', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: var(--color-m3-surface);
+    color: var(--color-m3-on-surface);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Custom M3 Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-m3-outline-variant);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-m3-outline);
+}

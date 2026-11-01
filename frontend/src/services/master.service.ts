@@ -7,6 +7,8 @@ import {
   SubjectGroupSummary,
   CreateSubjectGroupInput,
   UpdateSubjectGroupInput,
+  ReorderSubjectItem,
+  ReorderSubjectGroupItem,
   TeachingAssignment,
   LearningObjective,
   DashboardStats,
@@ -71,16 +73,17 @@ export const masterService = {
   },
 
   // Learning Objectives (TP)
-  async getLearningObjectives(subjectId: string): Promise<{
+  async getLearningObjectives(subjectId: string, guruId?: string): Promise<{
     learning_objectives: LearningObjective[];
     count: number;
   }> {
-    return api.get(`/subjects/${subjectId}/learning-objectives`);
+    const query = guruId ? `?guru_id=${encodeURIComponent(guruId)}` : '';
+    return api.get(`/subjects/${subjectId}/learning-objectives${query}`);
   },
 
   async createLearningObjective(
     subjectId: string,
-    input: { kode_tp: string; deskripsi: string; urutan?: number }
+    input: { kode_tp: string; deskripsi: string; urutan?: number; guru_id?: string }
   ): Promise<{ message: string; learning_objective: LearningObjective }> {
     return api.post(`/subjects/${subjectId}/learning-objectives`, input);
   },
@@ -200,9 +203,17 @@ export const masterService = {
   async createTeachingAssignment(input: {
     guru_id: string;
     subject_id: string;
-    rombel_id: string;
+    rombel_id?: string;
+    rombel_ids?: string[];
     jam_per_minggu?: number;
-  }): Promise<{ message: string; assignment: TeachingAssignment }> {
+  }): Promise<{
+    status?: string;
+    message: string;
+    assignment?: TeachingAssignment;
+    assignments?: TeachingAssignment[];
+    created_count?: number;
+    skipped_count?: number;
+  }> {
     return api.post('/admin/teaching-assignments', input);
   },
 
@@ -262,5 +273,17 @@ export const masterService = {
   ): Promise<{ message: string }> {
     const query = targetKelompok ? `?target_kelompok=${encodeURIComponent(targetKelompok)}` : '';
     return api.delete(`/admin/subject-groups/${encodeURIComponent(kode)}${query}`);
+  },
+
+  async reorderSubjects(
+    orders: ReorderSubjectItem[]
+  ): Promise<{ status: string; message: string }> {
+    return api.put('/admin/subjects/reorder', { orders });
+  },
+
+  async reorderSubjectGroups(
+    orders: ReorderSubjectGroupItem[]
+  ): Promise<{ status: string; message: string }> {
+    return api.put('/admin/subject-groups/reorder', { orders });
   },
 };

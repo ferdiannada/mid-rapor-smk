@@ -62,6 +62,7 @@ export interface Subject {
   dapodik_mapel_id?: number;
   nama: string;
   kelompok: string;
+  urutan?: number;
   learning_objective_count?: number;
   is_manual_override?: boolean;
   created_at?: string;
@@ -85,6 +86,8 @@ export interface LearningObjective {
   id: string;
   subject_id: string;
   subject?: Subject;
+  guru_id?: string;
+  guru?: User;
   kode_tp: string;
   deskripsi: string;
   urutan: number;
@@ -310,10 +313,66 @@ export interface UpdateSubjectGroupInput {
   urutan?: number;
 }
 
+export interface ReorderSubjectItem {
+  id: string;
+  urutan: number;
+  kelompok?: string;
+}
+
+export interface ReorderSubjectGroupItem {
+  kode: string;
+  urutan: number;
+}
+
+export interface SchoolProfile {
+  id: string;
+  nama_sekolah: string;
+  npsn: string;
+  nss?: string;
+  bentuk_pendidikan?: string;
+  status_sekolah?: string;
+  alamat?: string;
+  desa_kelurahan?: string;
+  kecamatan?: string;
+  kabupaten_kota?: string;
+  provinsi?: string;
+  kode_pos?: string;
+  telepon?: string;
+  email?: string;
+  website?: string;
+  kop_baris_1?: string;
+  kop_baris_2?: string;
+  kop_baris_3?: string;
+  logo_kiri?: string;
+  logo_kanan?: string;
+  kepala_sekolah_nama?: string;
+  kepala_sekolah_nip?: string;
+  titimangsa_tempat?: string;
+  tanggal_rapor_pts?: string;
+  tanggal_rapor_pas?: string;
+  created_at?: string;
+  updated_at?: string;
+  updated_by?: string;
+}
+
 export interface StudentReportData {
   sekolah_nama: string;
   sekolah_npsn: string;
+  sekolah_nss?: string;
   sekolah_alamat: string;
+  sekolah_kelurahan?: string;
+  sekolah_kecamatan?: string;
+  sekolah_kabupaten?: string;
+  sekolah_provinsi?: string;
+  sekolah_kode_pos?: string;
+  sekolah_telepon?: string;
+  sekolah_email?: string;
+  sekolah_website?: string;
+  kop_baris_1?: string;
+  kop_baris_2?: string;
+  kop_baris_3?: string;
+  logo_kiri?: string;
+  logo_kanan?: string;
   tahun_ajaran: string;
   semester: string;
   jenis_rapor: string;

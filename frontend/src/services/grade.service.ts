@@ -28,6 +28,7 @@ export const gradeService = {
     subjectId: string,
     students: {
       student_id: string;
+      nilai_akhir?: number;
       tp_scores: { learning_objective_id: string; nilai: number }[];
     }[]
   ): Promise<{

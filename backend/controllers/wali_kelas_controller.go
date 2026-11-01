@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -78,6 +79,7 @@ type SubjectRecapItem struct {
 	ID        string  `json:"id"`
 	Nama      string  `json:"nama"`
 	Kelompok  string  `json:"kelompok"`
+	Urutan    int     `json:"urutan"`
 	GuruName  string  `json:"guru_name"`
 	RataKelas float64 `json:"rata_kelas"`
 }
@@ -154,6 +156,7 @@ func (ctrl *WaliKelasController) GetRecap(c *gin.Context) {
 					ID:       a.Subject.ID,
 					Nama:     a.Subject.Nama,
 					Kelompok: a.Subject.Kelompok,
+					Urutan:   a.Subject.Urutan,
 					GuruName: guruName,
 				}
 				subjectOrder = append(subjectOrder, a.Subject.ID)
@@ -193,6 +196,37 @@ func (ctrl *WaliKelasController) GetRecap(c *gin.Context) {
 		}
 		subjects = append(subjects, item)
 	}
+
+	// Urutkan kolom rekap sesuai urutan kelompok mapel, lalu urutan mapel di dalamnya
+	var sGroups []models.SubjectGroup
+	groupOrderMap := make(map[string]int)
+	if err := db.Order("urutan ASC, kode ASC").Find(&sGroups).Error; err == nil {
+		for i, sg := range sGroups {
+			orderVal := sg.Urutan
+			if orderVal <= 0 {
+				orderVal = i + 1
+			}
+			groupOrderMap[strings.ToUpper(strings.TrimSpace(sg.Kode))] = orderVal
+		}
+	}
+
+	sort.SliceStable(subjects, func(i, j int) bool {
+		gOrderI := groupOrderMap[strings.ToUpper(strings.TrimSpace(subjects[i].Kelompok))]
+		if gOrderI == 0 {
+			gOrderI = 999
+		}
+		gOrderJ := groupOrderMap[strings.ToUpper(strings.TrimSpace(subjects[j].Kelompok))]
+		if gOrderJ == 0 {
+			gOrderJ = 999
+		}
+		if gOrderI != gOrderJ {
+			return gOrderI < gOrderJ
+		}
+		if subjects[i].Urutan != subjects[j].Urutan {
+			return subjects[i].Urutan < subjects[j].Urutan
+		}
+		return subjects[i].Nama < subjects[j].Nama
+	})
 
 	// Build rows
 	var rows []StudentRecapRow

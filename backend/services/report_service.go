@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"html/template"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,26 +21,40 @@ import (
 )
 
 type StudentReportData struct {
-	SekolahNama     string                         `json:"sekolah_nama"`
-	SekolahNPSN     string                         `json:"sekolah_npsn"`
-	SekolahAlamat   string                         `json:"sekolah_alamat"`
-	TahunAjaran     string                         `json:"tahun_ajaran"`
-	Semester        string                         `json:"semester"`
-	JenisRapor      string                         `json:"jenis_rapor"`
-	Fase            string                         `json:"fase"`
-	Kelas           string                         `json:"kelas"`
-	Student         models.Student                 `json:"student"`
-	WaliKelasNama   string                         `json:"wali_kelas_nama"`
-	WaliKelasNIP    string                         `json:"wali_kelas_nip"`
-	KepsekNama      string                         `json:"kepsek_nama"`
-	KepsekNIP       string                         `json:"kepsek_nip"`
-	TanggalCetak    string                         `json:"tanggal_cetak"`
-	KotaSekolah     string                         `json:"kota_sekolah"`
-	Grades          []ReportSubjectGrade           `json:"grades"`
-	GroupedGrades   []ReportGradeGroup             `json:"grouped_grades"`
-	Attendance      *models.Attendance             `json:"attendance"`
-	Extracurricular []models.Extracurricular       `json:"extracurricular"`
-	WaliNote        *models.WaliKelasNote          `json:"wali_note"`
+	SekolahNama      string                         `json:"sekolah_nama"`
+	SekolahNPSN      string                         `json:"sekolah_npsn"`
+	SekolahNSS       string                         `json:"sekolah_nss"`
+	SekolahAlamat    string                         `json:"sekolah_alamat"`
+	SekolahKelurahan string                         `json:"sekolah_kelurahan"`
+	SekolahKecamatan string                         `json:"sekolah_kecamatan"`
+	SekolahKabupaten string                         `json:"sekolah_kabupaten"`
+	SekolahProvinsi  string                         `json:"sekolah_provinsi"`
+	SekolahKodePos   string                         `json:"sekolah_kode_pos"`
+	SekolahTelepon   string                         `json:"sekolah_telepon"`
+	SekolahEmail     string                         `json:"sekolah_email"`
+	SekolahWebsite   string                         `json:"sekolah_website"`
+	KopBaris1        string                         `json:"kop_baris_1"`
+	KopBaris2        string                         `json:"kop_baris_2"`
+	KopBaris3        string                         `json:"kop_baris_3"`
+	LogoKiri         string                         `json:"logo_kiri"`
+	LogoKanan        string                         `json:"logo_kanan"`
+	TahunAjaran      string                         `json:"tahun_ajaran"`
+	Semester         string                         `json:"semester"`
+	JenisRapor       string                         `json:"jenis_rapor"`
+	Fase             string                         `json:"fase"`
+	Kelas            string                         `json:"kelas"`
+	Student          models.Student                 `json:"student"`
+	WaliKelasNama    string                         `json:"wali_kelas_nama"`
+	WaliKelasNIP     string                         `json:"wali_kelas_nip"`
+	KepsekNama       string                         `json:"kepsek_nama"`
+	KepsekNIP        string                         `json:"kepsek_nip"`
+	TanggalCetak     string                         `json:"tanggal_cetak"`
+	KotaSekolah      string                         `json:"kota_sekolah"`
+	Grades           []ReportSubjectGrade           `json:"grades"`
+	GroupedGrades    []ReportGradeGroup             `json:"grouped_grades"`
+	Attendance       *models.Attendance             `json:"attendance"`
+	Extracurricular  []models.Extracurricular       `json:"extracurricular"`
+	WaliNote         *models.WaliKelasNote          `json:"wali_note"`
 }
 
 type ReportGradeGroup struct {
@@ -53,6 +68,7 @@ type ReportSubjectGrade struct {
 	SubjectID        string  `json:"subject_id"`
 	SubjectNama      string  `json:"subject_nama"`
 	Kelompok         string  `json:"kelompok"`
+	Urutan           int     `json:"urutan"`
 	GuruNama         string  `json:"guru_nama"`
 	NilaiAkhir       float64 `json:"nilai_akhir"`
 	DeskripsiCapaian string  `json:"deskripsi_capaian"`
@@ -95,18 +111,22 @@ func FormatKelompokTitle(k string) string {
 	}
 }
 
-func GroupGradesByKelompok(grades []ReportSubjectGrade) ([]ReportGradeGroup, []ReportSubjectGrade) {
+func GroupGradesByKelompok(grades []ReportSubjectGrade, cachedGroups ...[]models.SubjectGroup) ([]ReportGradeGroup, []ReportSubjectGrade) {
 	groupOrder := []string{"A", "B", "C", "Muatan Lokal"}
 	titleMap := make(map[string]string)
 
-	if config.DB != nil {
-		var sGroups []models.SubjectGroup
-		if err := config.DB.Order("urutan ASC, kode ASC").Find(&sGroups).Error; err == nil && len(sGroups) > 0 {
-			groupOrder = make([]string, 0, len(sGroups))
-			for _, sg := range sGroups {
-				groupOrder = append(groupOrder, sg.Kode)
-				titleMap[strings.ToUpper(strings.TrimSpace(sg.Kode))] = sg.Nama
-			}
+	var sGroups []models.SubjectGroup
+	if len(cachedGroups) > 0 && len(cachedGroups[0]) > 0 {
+		sGroups = cachedGroups[0]
+	} else if config.DB != nil {
+		_ = config.DB.Order("urutan ASC, kode ASC").Find(&sGroups).Error
+	}
+
+	if len(sGroups) > 0 {
+		groupOrder = make([]string, 0, len(sGroups))
+		for _, sg := range sGroups {
+			groupOrder = append(groupOrder, sg.Kode)
+			titleMap[strings.ToUpper(strings.TrimSpace(sg.Kode))] = sg.Nama
 		}
 	}
 
@@ -152,6 +172,15 @@ func GroupGradesByKelompok(grades []ReportSubjectGrade) ([]ReportGradeGroup, []R
 
 	for _, key := range allKeys {
 		items := groupMap[key]
+
+		// Urutkan mapel dalam kelompok berdasarkan urutan ASC, lalu abjad SubjectNama ASC
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].Urutan != items[j].Urutan {
+				return items[i].Urutan < items[j].Urutan
+			}
+			return items[i].SubjectNama < items[j].SubjectNama
+		})
+
 		updatedItems := make([]ReportSubjectGrade, len(items))
 		for i, it := range items {
 			it.No = sequentialNo
@@ -200,11 +229,18 @@ func (s *ReportService) GetStudentReportData(db *gorm.DB, studentID string, seme
 		return nil, fmt.Errorf("rombel siswa tidak valid")
 	}
 
-	// 3. Get School Config (Dapodik Config)
+	// 3. Get School Profile (Identitas Sekolah)
+	var schoolProfile models.SchoolProfile
+	hasSchoolProfile := false
+	if err := db.Order("updated_at DESC").First(&schoolProfile).Error; err == nil && schoolProfile.ID != "" {
+		hasSchoolProfile = true
+	}
+
+	// 4. Get School Config (Dapodik Config)
 	var dConfig models.DapodikConfig
 	db.Where("is_active = true").First(&dConfig)
 
-	// 4. Get Principal (Admin)
+	// 5. Get Principal (Admin)
 	var kepsek models.User
 	db.Where("role = ?", models.RoleAdmin).First(&kepsek)
 
@@ -219,13 +255,13 @@ func (s *ReportService) GetStudentReportData(db *gorm.DB, studentID string, seme
 		semesterText = "2 (Genap)"
 	}
 
-	// 5. Get all Teaching Assignments in this rombel (to discover subjects)
+	// 6. Get all Teaching Assignments in this rombel (to discover subjects)
 	var assignments []models.TeachingAssignment
 	db.Preload("Subject").Preload("Guru").
 		Where("rombel_id = ?", rombel.ID).
 		Find(&assignments)
 
-	// 6. Get student's grades
+	// 7. Get student's grades
 	var grades []models.Grade
 	db.Where("student_id = ? AND semester_id = ?", student.ID, sem.ID).Find(&grades)
 	gradeMap := make(map[string]models.Grade)
@@ -251,6 +287,7 @@ func (s *ReportService) GetStudentReportData(db *gorm.DB, studentID string, seme
 				SubjectID:   a.Subject.ID,
 				SubjectNama: a.Subject.Nama,
 				Kelompok:    a.Subject.Kelompok,
+				Urutan:      a.Subject.Urutan,
 				GuruNama:    guruName,
 			}
 
@@ -267,15 +304,15 @@ func (s *ReportService) GetStudentReportData(db *gorm.DB, studentID string, seme
 		}
 	}
 
-	// 7. Get Attendance
+	// 8. Get Attendance
 	var att models.Attendance
 	db.Where("student_id = ? AND semester_id = ?", student.ID, sem.ID).First(&att)
 
-	// 8. Get Extracurriculars
+	// 9. Get Extracurriculars
 	ekskul := make([]models.Extracurricular, 0)
 	db.Where("student_id = ? AND semester_id = ?", student.ID, sem.ID).Find(&ekskul)
 
-	// 9. Get Wali Note
+	// 10. Get Wali Note
 	var waliNote models.WaliKelasNote
 	db.Where("student_id = ? AND semester_id = ?", student.ID, sem.ID).First(&waliNote)
 
@@ -290,7 +327,12 @@ func (s *ReportService) GetStudentReportData(db *gorm.DB, studentID string, seme
 
 	kepsekName := "Drs. H. Mulyadi, M.Pd."
 	kepsekNIP := "196805121994031004"
-	if kepsek.Name != "" {
+	if hasSchoolProfile && schoolProfile.KepalaSekolahNama != "" {
+		kepsekName = schoolProfile.KepalaSekolahNama
+		if schoolProfile.KepalaSekolahNIP != "" {
+			kepsekNIP = schoolProfile.KepalaSekolahNIP
+		}
+	} else if kepsek.Name != "" {
 		kepsekName = kepsek.Name
 		if kepsek.NipNik != "" {
 			kepsekNIP = kepsek.NipNik
@@ -298,38 +340,116 @@ func (s *ReportService) GetStudentReportData(db *gorm.DB, studentID string, seme
 	}
 
 	npsn := "20108921"
-	if dConfig.Npsn != "" {
+	if hasSchoolProfile && schoolProfile.NPSN != "" {
+		npsn = schoolProfile.NPSN
+	} else if dConfig.Npsn != "" {
 		npsn = dConfig.Npsn
+	}
+
+	sekolahNama := "SMK NEGERI 1 KOTA"
+	if hasSchoolProfile && schoolProfile.NamaSekolah != "" {
+		sekolahNama = schoolProfile.NamaSekolah
+	}
+
+	sekolahAlamat := "Jl. Pendidikan No. 45, Kompleks Edukasi"
+	if hasSchoolProfile && schoolProfile.Alamat != "" {
+		sekolahAlamat = schoolProfile.Alamat
+	}
+
+	kotaSekolah := "Jakarta"
+	if hasSchoolProfile && schoolProfile.TitimangsaTempat != "" {
+		kotaSekolah = schoolProfile.TitimangsaTempat
+	} else if hasSchoolProfile && schoolProfile.KabupatenKota != "" {
+		kotaSekolah = schoolProfile.KabupatenKota
+	}
+
+	kopBaris1 := "PEMERINTAH PROVINSI DAERAH KHUSUS IBUKOTA JAKARTA"
+	kopBaris2 := "DINAS PENDIDIKAN"
+	kopBaris3 := ""
+	if hasSchoolProfile {
+		if schoolProfile.KopBaris1 != "" {
+			kopBaris1 = schoolProfile.KopBaris1
+		}
+		if schoolProfile.KopBaris2 != "" {
+			kopBaris2 = schoolProfile.KopBaris2
+		}
+		kopBaris3 = schoolProfile.KopBaris3
+	}
+
+	logoKiri := ""
+	logoKanan := ""
+	sekolahNSS := ""
+	sekolahKelurahan := ""
+	sekolahKecamatan := ""
+	sekolahKabupaten := ""
+	sekolahProvinsi := ""
+	sekolahKodePos := ""
+	sekolahTelepon := ""
+	sekolahEmail := ""
+	sekolahWebsite := ""
+	if hasSchoolProfile {
+		logoKiri = schoolProfile.LogoKiri
+		logoKanan = schoolProfile.LogoKanan
+		sekolahNSS = schoolProfile.NSS
+		sekolahKelurahan = schoolProfile.DesaKelurahan
+		sekolahKecamatan = schoolProfile.Kecamatan
+		sekolahKabupaten = schoolProfile.KabupatenKota
+		sekolahProvinsi = schoolProfile.Provinsi
+		sekolahKodePos = schoolProfile.KodePos
+		sekolahTelepon = schoolProfile.Telepon
+		sekolahEmail = schoolProfile.Email
+		sekolahWebsite = schoolProfile.Website
 	}
 
 	// Format tanggal cetak Indonesia
 	now := time.Now()
 	bulanIndo := []string{"", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"}
 	tanggalCetak := fmt.Sprintf("%d %s %d", now.Day(), bulanIndo[now.Month()], now.Year())
+	if hasSchoolProfile {
+		if sem.JenisRapor == "mid" && schoolProfile.TanggalRaporPTS != "" {
+			tanggalCetak = schoolProfile.TanggalRaporPTS
+		} else if sem.JenisRapor == "akhir" && schoolProfile.TanggalRaporPAS != "" {
+			tanggalCetak = schoolProfile.TanggalRaporPAS
+		}
+	}
 
 	groupedGrades, sortedGrades := GroupGradesByKelompok(reportGrades)
 
 	return &StudentReportData{
-		SekolahNama:     "SMK NEGERI 1 KOTA",
-		SekolahNPSN:     npsn,
-		SekolahAlamat:   "Jl. Pendidikan No. 45, Kompleks Edukasi",
-		TahunAjaran:     sem.TahunAjaran,
-		Semester:        semesterText,
-		JenisRapor:      "Laporan Hasil Penilaian Tengah Semester (PTS / STS)",
-		Fase:            fase,
-		Kelas:           rombel.Name,
-		Student:         student,
-		WaliKelasNama:   waliName,
-		WaliKelasNIP:    waliNIP,
-		KepsekNama:      kepsekName,
-		KepsekNIP:       kepsekNIP,
-		TanggalCetak:    tanggalCetak,
-		KotaSekolah:     "Jakarta",
-		Grades:          sortedGrades,
-		GroupedGrades:   groupedGrades,
-		Attendance:      &att,
-		Extracurricular: ekskul,
-		WaliNote:        &waliNote,
+		SekolahNama:      sekolahNama,
+		SekolahNPSN:      npsn,
+		SekolahNSS:       sekolahNSS,
+		SekolahAlamat:    sekolahAlamat,
+		SekolahKelurahan: sekolahKelurahan,
+		SekolahKecamatan: sekolahKecamatan,
+		SekolahKabupaten: sekolahKabupaten,
+		SekolahProvinsi:  sekolahProvinsi,
+		SekolahKodePos:   sekolahKodePos,
+		SekolahTelepon:   sekolahTelepon,
+		SekolahEmail:     sekolahEmail,
+		SekolahWebsite:   sekolahWebsite,
+		KopBaris1:        kopBaris1,
+		KopBaris2:        kopBaris2,
+		KopBaris3:        kopBaris3,
+		LogoKiri:         logoKiri,
+		LogoKanan:        logoKanan,
+		TahunAjaran:      sem.TahunAjaran,
+		Semester:         semesterText,
+		JenisRapor:       "Laporan Hasil Penilaian Tengah Semester (PTS / STS)",
+		Fase:             fase,
+		Kelas:            rombel.Name,
+		Student:          student,
+		WaliKelasNama:    waliName,
+		WaliKelasNIP:     waliNIP,
+		KepsekNama:       kepsekName,
+		KepsekNIP:        kepsekNIP,
+		TanggalCetak:     tanggalCetak,
+		KotaSekolah:      kotaSekolah,
+		Grades:           sortedGrades,
+		GroupedGrades:    groupedGrades,
+		Attendance:       &att,
+		Extracurricular:  ekskul,
+		WaliNote:         &waliNote,
 	}, nil
 }
 
@@ -360,28 +480,39 @@ func (s *ReportService) GenerateReportHTML(data *StudentReportData) (string, err
       background: #fff;
     }
     .header-kop {
-      text-align: center;
       border-bottom: 3px double #000;
       padding-bottom: 8px;
       margin-bottom: 14px;
     }
     .header-kop h2 {
       margin: 0;
-      font-size: 14pt;
+      font-size: 13pt;
       font-weight: bold;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+      line-height: 1.25;
+    }
+    .header-kop h3 {
+      margin: 0;
+      font-size: 10.5pt;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      line-height: 1.2;
     }
     .header-kop h1 {
       margin: 2px 0;
-      font-size: 16pt;
+      font-size: 15pt;
       font-weight: 900;
       text-transform: uppercase;
+      letter-spacing: 0.5px;
+      line-height: 1.2;
     }
     .header-kop p {
       margin: 2px 0 0 0;
-      font-size: 9.5pt;
+      font-size: 9pt;
       font-style: italic;
+      line-height: 1.25;
     }
     .report-title {
       text-align: center;
@@ -460,10 +591,35 @@ func (s *ReportService) GenerateReportHTML(data *StudentReportData) (string, err
 
   <!-- KOP SURAT -->
   <div class="header-kop">
-    <h2>PEMERINTAH PROVINSI DAERAH KHUSUS IBUKOTA JAKARTA</h2>
-    <h2>DINAS PENDIDIKAN</h2>
-    <h1>{{.SekolahNama}}</h1>
-    <p>{{.SekolahAlamat}} • NPSN: {{.SekolahNPSN}}</p>
+    <table style="width: 100%; border-collapse: collapse; margin-bottom: 2px;">
+      <tr>
+        {{if .LogoKiri}}
+        <td style="width: 80px; text-align: center; vertical-align: middle; padding-right: 12px;">
+          <img src="{{safeURL .LogoKiri}}" alt="Logo Sekolah" style="max-height: 75px; max-width: 80px; object-fit: contain; display: block; margin: 0 auto;" />
+        </td>
+        {{end}}
+        <td style="text-align: center; vertical-align: middle;">
+          {{if .KopBaris1}}<h2>{{.KopBaris1}}</h2>{{end}}
+          {{if .KopBaris2}}<h2>{{.KopBaris2}}</h2>{{end}}
+          {{if .KopBaris3}}<h3>{{.KopBaris3}}</h3>{{end}}
+          <h1>{{.SekolahNama}}</h1>
+          <p>{{.SekolahAlamat}}{{if .SekolahKecamatan}}, Kec. {{.SekolahKecamatan}}{{end}}{{if .SekolahKabupaten}}, {{.SekolahKabupaten}}{{end}}{{if .SekolahKodePos}} {{.SekolahKodePos}}{{end}}</p>
+          <p>
+            {{if .SekolahTelepon}}Telp: {{.SekolahTelepon}} {{end}}
+            {{if .SekolahEmail}}• Email: {{.SekolahEmail}} {{end}}
+            {{if .SekolahWebsite}}• Web: {{.SekolahWebsite}} {{end}}
+            • NPSN: {{.SekolahNPSN}}{{if .SekolahNSS}} • NSS: {{.SekolahNSS}}{{end}}
+          </p>
+        </td>
+        {{if .LogoKanan}}
+        <td style="width: 80px; text-align: center; vertical-align: middle; padding-left: 12px;">
+          <img src="{{safeURL .LogoKanan}}" alt="Logo Pemda" style="max-height: 75px; max-width: 80px; object-fit: contain; display: block; margin: 0 auto;" />
+        </td>
+        {{else if .LogoKiri}}
+        <td style="width: 80px; padding-left: 12px;"></td>
+        {{end}}
+      </tr>
+    </table>
   </div>
 
   <!-- JUDUL LAPORAN -->
@@ -645,7 +801,8 @@ func (s *ReportService) GenerateReportHTML(data *StudentReportData) (string, err
 </html>`
 
 	tmpl, err := template.New("rapor").Funcs(template.FuncMap{
-		"add": func(a, b int) int { return a + b },
+		"add":     func(a, b int) int { return a + b },
+		"safeURL": func(u string) template.URL { return template.URL(u) },
 	}).Parse(htmlTmpl)
 	if err != nil {
 		return "", err
@@ -720,52 +877,65 @@ func (s *ReportService) GeneratePDF(htmlContent string) ([]byte, error) {
 	return pdfBytes, nil
 }
 
-// GenerateRombelZip generates a ZIP file containing PDFs of all students in a rombel
-// Optimized with bulk metadata pre-cache and a 3-worker concurrency semaphore pool
-func (s *ReportService) GenerateRombelZip(db *gorm.DB, rombelID string, semesterID string) ([]byte, string, error) {
+// StreamRombelZip streams a ZIP file containing PDFs of all students directly to an io.Writer (e.g. gin ResponseWriter)
+// Minimizes RAM usage from tens of megabytes to a few megabytes and eliminates N+1 database queries.
+func (s *ReportService) StreamRombelZip(db *gorm.DB, rombelID string, semesterID string, out io.Writer) (string, error) {
 	// 1. Get Semester once
 	var sem models.Semester
 	if semesterID != "" {
 		if err := db.Where("id = ?", semesterID).First(&sem).Error; err != nil {
-			return nil, "", fmt.Errorf("semester tidak ditemukan: %w", err)
+			return "", fmt.Errorf("semester tidak ditemukan: %w", err)
 		}
 	} else {
 		if err := db.Where("is_active = true").First(&sem).Error; err != nil {
-			return nil, "", fmt.Errorf("semester aktif tidak ditemukan: %w", err)
+			return "", fmt.Errorf("semester aktif tidak ditemukan: %w", err)
 		}
 	}
 
 	// 2. Get Rombel with WaliKelas once
 	var rombel models.Rombel
 	if err := db.Preload("WaliKelas").Where("id = ?", rombelID).First(&rombel).Error; err != nil {
-		return nil, "", fmt.Errorf("rombel tidak ditemukan: %w", err)
+		return "", fmt.Errorf("rombel tidak ditemukan: %w", err)
 	}
 
 	// 3. Get Students in Rombel
 	var students []models.Student
 	if err := db.Where("rombel_id = ?", rombelID).Order("name ASC").Find(&students).Error; err != nil {
-		return nil, "", fmt.Errorf("gagal mengambil data siswa: %w", err)
+		return "", fmt.Errorf("gagal mengambil data siswa: %w", err)
 	}
 
 	if len(students) == 0 {
-		return nil, "", fmt.Errorf("tidak ada siswa di rombel ini")
+		return "", fmt.Errorf("tidak ada siswa di rombel ini")
 	}
 
-	// 4. Get School Config once
+	// 4. Get School Profile once (Identitas Sekolah)
+	var schoolProfile models.SchoolProfile
+	hasSchoolProfile := false
+	if err := db.Order("updated_at DESC").First(&schoolProfile).Error; err == nil && schoolProfile.ID != "" {
+		hasSchoolProfile = true
+	}
+
+	// 5. Get School Config (Dapodik Config) once
 	var dConfig models.DapodikConfig
 	db.Where("is_active = true").First(&dConfig)
 
-	// 5. Get Principal once
+	// 6. Get Principal once
 	var kepsek models.User
 	db.Where("role = ?", models.RoleAdmin).First(&kepsek)
 
-	// 6. Get Teaching Assignments for this rombel once
+	// 7. Get Teaching Assignments for this rombel once
 	var assignments []models.TeachingAssignment
 	db.Preload("Subject").Preload("Guru").
 		Where("rombel_id = ?", rombel.ID).
 		Find(&assignments)
 
-	// 7. Bulk fetch all grades in this rombel & semester (1 query instead of N)
+	// 8. Pre-fetch Subject Groups once (eliminates N+1 DB queries per student)
+	var preloadedSubjectGroups []models.SubjectGroup
+	if err := db.Order("urutan ASC, kode ASC").Find(&preloadedSubjectGroups).Error; err != nil {
+		preloadedSubjectGroups = nil
+	}
+
+	// 9. Bulk fetch all grades in this rombel & semester (1 query instead of N)
 	var allGrades []models.Grade
 	db.Where("rombel_id = ? AND semester_id = ?", rombelID, sem.ID).Find(&allGrades)
 	studentGradesMap := make(map[string]map[string]models.Grade)
@@ -776,7 +946,7 @@ func (s *ReportService) GenerateRombelZip(db *gorm.DB, rombelID string, semester
 		studentGradesMap[g.StudentID][g.SubjectID] = g
 	}
 
-	// 8. Bulk fetch attendances, extracurriculars, wali notes in this rombel (3 queries instead of 3xN)
+	// 10. Bulk fetch attendances, extracurriculars, wali notes in this rombel (3 queries instead of 3xN)
 	var allAttendances []models.Attendance
 	db.Where("rombel_id = ? AND semester_id = ?", rombelID, sem.ID).Find(&allAttendances)
 	attendanceMap := make(map[string]models.Attendance)
@@ -817,21 +987,93 @@ func (s *ReportService) GenerateRombelZip(db *gorm.DB, rombelID string, semester
 	}
 	kepsekName := "Drs. H. Mulyadi, M.Pd."
 	kepsekNIP := "196805121994031004"
-	if kepsek.Name != "" {
+	if hasSchoolProfile && schoolProfile.KepalaSekolahNama != "" {
+		kepsekName = schoolProfile.KepalaSekolahNama
+		if schoolProfile.KepalaSekolahNIP != "" {
+			kepsekNIP = schoolProfile.KepalaSekolahNIP
+		}
+	} else if kepsek.Name != "" {
 		kepsekName = kepsek.Name
 		if kepsek.NipNik != "" {
 			kepsekNIP = kepsek.NipNik
 		}
 	}
+
 	npsn := "20108921"
-	if dConfig.Npsn != "" {
+	if hasSchoolProfile && schoolProfile.NPSN != "" {
+		npsn = schoolProfile.NPSN
+	} else if dConfig.Npsn != "" {
 		npsn = dConfig.Npsn
 	}
+
+	sekolahNama := "SMK NEGERI 1 KOTA"
+	if hasSchoolProfile && schoolProfile.NamaSekolah != "" {
+		sekolahNama = schoolProfile.NamaSekolah
+	}
+
+	sekolahAlamat := "Jl. Pendidikan No. 45, Kompleks Edukasi"
+	if hasSchoolProfile && schoolProfile.Alamat != "" {
+		sekolahAlamat = schoolProfile.Alamat
+	}
+
+	kotaSekolah := "Jakarta"
+	if hasSchoolProfile && schoolProfile.TitimangsaTempat != "" {
+		kotaSekolah = schoolProfile.TitimangsaTempat
+	} else if hasSchoolProfile && schoolProfile.KabupatenKota != "" {
+		kotaSekolah = schoolProfile.KabupatenKota
+	}
+
+	kopBaris1 := "PEMERINTAH PROVINSI DAERAH KHUSUS IBUKOTA JAKARTA"
+	kopBaris2 := "DINAS PENDIDIKAN"
+	kopBaris3 := ""
+	if hasSchoolProfile {
+		if schoolProfile.KopBaris1 != "" {
+			kopBaris1 = schoolProfile.KopBaris1
+		}
+		if schoolProfile.KopBaris2 != "" {
+			kopBaris2 = schoolProfile.KopBaris2
+		}
+		kopBaris3 = schoolProfile.KopBaris3
+	}
+
+	logoKiri := ""
+	logoKanan := ""
+	sekolahNSS := ""
+	sekolahKelurahan := ""
+	sekolahKecamatan := ""
+	sekolahKabupaten := ""
+	sekolahProvinsi := ""
+	sekolahKodePos := ""
+	sekolahTelepon := ""
+	sekolahEmail := ""
+	sekolahWebsite := ""
+	if hasSchoolProfile {
+		logoKiri = schoolProfile.LogoKiri
+		logoKanan = schoolProfile.LogoKanan
+		sekolahNSS = schoolProfile.NSS
+		sekolahKelurahan = schoolProfile.DesaKelurahan
+		sekolahKecamatan = schoolProfile.Kecamatan
+		sekolahKabupaten = schoolProfile.KabupatenKota
+		sekolahProvinsi = schoolProfile.Provinsi
+		sekolahKodePos = schoolProfile.KodePos
+		sekolahTelepon = schoolProfile.Telepon
+		sekolahEmail = schoolProfile.Email
+		sekolahWebsite = schoolProfile.Website
+	}
+
+	// Format tanggal cetak Indonesia
 	now := time.Now()
 	bulanIndo := []string{"", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"}
 	tanggalCetak := fmt.Sprintf("%d %s %d", now.Day(), bulanIndo[now.Month()], now.Year())
+	if hasSchoolProfile {
+		if sem.JenisRapor == "mid" && schoolProfile.TanggalRaporPTS != "" {
+			tanggalCetak = schoolProfile.TanggalRaporPTS
+		} else if sem.JenisRapor == "akhir" && schoolProfile.TanggalRaporPAS != "" {
+			tanggalCetak = schoolProfile.TanggalRaporPAS
+		}
+	}
 
-	// 9. Concurrency Semaphore: Max 3 parallel Chrome workers (protects RAM & speeds up 3.5x)
+	// 11. Concurrency Semaphore: Max 3 parallel Chrome workers (protects RAM & speeds up 3.5x)
 	type studentPDFResult struct {
 		idx      int
 		fileName string
@@ -866,6 +1108,7 @@ func (s *ReportService) GenerateRombelZip(db *gorm.DB, rombelID string, semester
 						SubjectID:   a.Subject.ID,
 						SubjectNama: a.Subject.Nama,
 						Kelompok:    a.Subject.Kelompok,
+						Urutan:      a.Subject.Urutan,
 						GuruNama:    guruName,
 					}
 					if g, exists := gradeMap[a.Subject.ID]; exists {
@@ -884,29 +1127,43 @@ func (s *ReportService) GenerateRombelZip(db *gorm.DB, rombelID string, semester
 			ekskul := ekskulMap[st.ID]
 			waliNote := notesMap[st.ID]
 
-			groupedGrades, sortedGrades := GroupGradesByKelompok(reportGrades)
+			groupedGrades, sortedGrades := GroupGradesByKelompok(reportGrades, preloadedSubjectGroups)
 
 			data := &StudentReportData{
-				SekolahNama:     "SMK NEGERI 1 KOTA",
-				SekolahNPSN:     npsn,
-				SekolahAlamat:   "Jl. Pendidikan No. 45, Kompleks Edukasi",
-				TahunAjaran:     sem.TahunAjaran,
-				Semester:        semesterText,
-				JenisRapor:      "Laporan Hasil Penilaian Tengah Semester (PTS / STS)",
-				Fase:            fase,
-				Kelas:           rombel.Name,
-				Student:         st,
-				WaliKelasNama:   waliName,
-				WaliKelasNIP:    waliNIP,
-				KepsekNama:      kepsekName,
-				KepsekNIP:       kepsekNIP,
-				TanggalCetak:    tanggalCetak,
-				KotaSekolah:     "Jakarta",
-				Grades:          sortedGrades,
-				GroupedGrades:   groupedGrades,
-				Attendance:      &att,
-				Extracurricular: ekskul,
-				WaliNote:        &waliNote,
+				SekolahNama:      sekolahNama,
+				SekolahNPSN:      npsn,
+				SekolahNSS:       sekolahNSS,
+				SekolahAlamat:    sekolahAlamat,
+				SekolahKelurahan: sekolahKelurahan,
+				SekolahKecamatan: sekolahKecamatan,
+				SekolahKabupaten: sekolahKabupaten,
+				SekolahProvinsi:  sekolahProvinsi,
+				SekolahKodePos:   sekolahKodePos,
+				SekolahTelepon:   sekolahTelepon,
+				SekolahEmail:     sekolahEmail,
+				SekolahWebsite:   sekolahWebsite,
+				KopBaris1:        kopBaris1,
+				KopBaris2:        kopBaris2,
+				KopBaris3:        kopBaris3,
+				LogoKiri:         logoKiri,
+				LogoKanan:        logoKanan,
+				TahunAjaran:      sem.TahunAjaran,
+				Semester:         semesterText,
+				JenisRapor:       "Laporan Hasil Penilaian Tengah Semester (PTS / STS)",
+				Fase:             fase,
+				Kelas:            rombel.Name,
+				Student:          st,
+				WaliKelasNama:    waliName,
+				WaliKelasNIP:     waliNIP,
+				KepsekNama:       kepsekName,
+				KepsekNIP:        kepsekNIP,
+				TanggalCetak:     tanggalCetak,
+				KotaSekolah:      kotaSekolah,
+				Grades:           sortedGrades,
+				GroupedGrades:    groupedGrades,
+				Attendance:       &att,
+				Extracurricular:  ekskul,
+				WaliNote:         &waliNote,
 			}
 
 			htmlContent, err := s.GenerateReportHTML(data)
@@ -930,37 +1187,41 @@ func (s *ReportService) GenerateRombelZip(db *gorm.DB, rombelID string, semester
 		}(idx, student)
 	}
 
+	zipWriter := zip.NewWriter(out)
+	doneConsumer := make(chan struct{})
+
+	// Stream incrementally to zip writer to avoid accumulating all PDFs in RAM
+	go func() {
+		defer close(doneConsumer)
+		for res := range resultsChan {
+			if res.err == nil && len(res.pdfBytes) > 0 {
+				f, err := zipWriter.Create(res.fileName)
+				if err == nil {
+					_, _ = f.Write(res.pdfBytes)
+				}
+			}
+		}
+	}()
+
 	wg.Wait()
 	close(resultsChan)
-
-	var pdfList []studentPDFResult
-	for res := range resultsChan {
-		if res.err == nil && len(res.pdfBytes) > 0 {
-			pdfList = append(pdfList, res)
-		}
-	}
-	sort.Slice(pdfList, func(i, j int) bool {
-		return pdfList[i].idx < pdfList[j].idx
-	})
-
-	buf := new(bytes.Buffer)
-	zipWriter := zip.NewWriter(buf)
-
-	for _, p := range pdfList {
-		f, err := zipWriter.Create(p.fileName)
-		if err != nil {
-			continue
-		}
-		if _, err := f.Write(p.pdfBytes); err != nil {
-			continue
-		}
-	}
+	<-doneConsumer
 
 	if err := zipWriter.Close(); err != nil {
-		return nil, "", fmt.Errorf("gagal menyelesaikan file ZIP: %w", err)
+		return "", fmt.Errorf("gagal menyelesaikan file ZIP: %w", err)
 	}
 
 	zipFilename := fmt.Sprintf("Rapor_Mid_%s.zip", rombel.Name)
+	return zipFilename, nil
+}
+
+// GenerateRombelZip generates a ZIP file containing PDFs of all students in a rombel
+func (s *ReportService) GenerateRombelZip(db *gorm.DB, rombelID string, semesterID string) ([]byte, string, error) {
+	buf := new(bytes.Buffer)
+	zipFilename, err := s.StreamRombelZip(db, rombelID, semesterID, buf)
+	if err != nil {
+		return nil, "", err
+	}
 	return buf.Bytes(), zipFilename, nil
 }
 

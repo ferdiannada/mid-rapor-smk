@@ -7,6 +7,7 @@ import { PageLoadingFallback } from './components/common/Skeleton';
 import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
 import { MobileBottomNav } from './components/layout/MobileBottomNav';
+import { InPlaceReauthModal } from './components/common/InPlaceReauthModal';
 
 // Code Splitting / Lazy Loaded Pages
 const Login = lazy(() => import('./pages/Login').then((m) => ({ default: m.Login })));
@@ -16,6 +17,9 @@ const ForceChangePassword = lazy(() =>
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const DapodikSettings = lazy(() =>
   import('./pages/DapodikSettings').then((m) => ({ default: m.DapodikSettings }))
+);
+const SchoolSettings = lazy(() =>
+  import('./pages/SchoolSettings').then((m) => ({ default: m.SchoolSettings }))
 );
 const SemesterManagement = lazy(() =>
   import('./pages/SemesterManagement').then((m) => ({ default: m.SemesterManagement }))
@@ -34,6 +38,9 @@ const SubjectGroups = lazy(() =>
 );
 const GradeInput = lazy(() =>
   import('./pages/GradeInput').then((m) => ({ default: m.GradeInput }))
+);
+const LearningObjectives = lazy(() =>
+  import('./pages/LearningObjectives').then((m) => ({ default: m.LearningObjectives }))
 );
 const GradeRecap = lazy(() =>
   import('./pages/GradeRecap').then((m) => ({ default: m.GradeRecap }))
@@ -119,6 +126,9 @@ const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
         {/* Mobile Bottom Navigation */}
         <MobileBottomNav onOpenMenu={() => setIsMobileMenuOpen(true)} />
       </div>
+
+      {/* In-Place Re-Authentication Dialog on Session Expiration */}
+      <InPlaceReauthModal />
     </div>
   );
 };
@@ -190,6 +200,16 @@ export const App: React.FC = () => {
 
                 {/* Settings & Admin */}
                 <Route
+                  path="/settings/school"
+                  element={
+                    <ProtectedLayout>
+                      <AdminRoute>
+                        <SchoolSettings />
+                      </AdminRoute>
+                    </ProtectedLayout>
+                  }
+                />
+                <Route
                   path="/settings/dapodik"
                   element={
                     <ProtectedLayout>
@@ -243,6 +263,14 @@ export const App: React.FC = () => {
                 <Route path="/admin/subject-groups" element={<Navigate to="/settings/subject-groups" replace />} />
 
                 {/* Grades & Reports */}
+                <Route
+                  path="/learning-objectives"
+                  element={
+                    <ProtectedLayout>
+                      <LearningObjectives />
+                    </ProtectedLayout>
+                  }
+                />
                 <Route
                   path="/grades/input"
                   element={

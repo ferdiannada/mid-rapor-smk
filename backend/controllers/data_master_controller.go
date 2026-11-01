@@ -111,7 +111,7 @@ type SubjectWithTPCount struct {
 func (ctrl *DataMasterController) GetSubjects(c *gin.Context) {
 	db := config.DB
 	var subjects []models.Subject
-	if err := db.Order("kelompok ASC, nama ASC").Find(&subjects).Error; err != nil {
+	if err := db.Order("kelompok ASC, urutan ASC, nama ASC").Find(&subjects).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  "error",
 			"message": "Gagal mengambil data mata pelajaran",
@@ -125,10 +125,16 @@ func (ctrl *DataMasterController) GetSubjects(c *gin.Context) {
 		Count     int64  `gorm:"column:count"`
 	}
 	var tpCounts []SubjectTPCount
-	db.Model(&models.LearningObjective{}).
-		Select("subject_id, count(*) as count").
-		Group("subject_id").
-		Scan(&tpCounts)
+	tpQuery := db.Model(&models.LearningObjective{}).
+		Select("subject_id, count(*) as count")
+
+	userRole, _ := c.Get("user_role")
+	userID, _ := c.Get("user_id")
+	if userRole == string(models.RoleGuru) && userID != nil {
+		tpQuery = tpQuery.Where("guru_id = ?", userID)
+	}
+
+	tpQuery.Group("subject_id").Scan(&tpCounts)
 
 	tpCountMap := make(map[string]int64, len(tpCounts))
 	for _, tc := range tpCounts {

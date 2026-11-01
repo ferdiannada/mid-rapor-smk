@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   CalendarCheck,
   MessageSquare,
@@ -6,16 +6,26 @@ import {
   Save,
   Plus,
   Trash2,
-  Users,
   Search,
   CheckCircle2,
   AlertCircle,
   RefreshCw,
   FileText,
+  Wifi,
+  WifiOff,
+  Database,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { masterService } from '../services/master.service';
 import { gradeService } from '../services/grade.service';
+import { useOfflineSync } from '../hooks/useOfflineSync';
+import {
+  saveDraft,
+  getDraft,
+  deleteDraft,
+  enqueueOutbox,
+  outboxWorker,
+} from '../services/offline';
 import {
   Rombel,
   AttendanceItem,
@@ -28,6 +38,9 @@ import { M3Button, M3Card, M3TextField, M3Dialog } from '../components/m3';
 export const Attendance: React.FC = () => {
   const { user } = useAuth();
   const isWaliKelas = !!user?.wali_kelas_rombel;
+
+  // Offline sync hook
+  const { isOnline, unsyncedCount, isSyncing, triggerSync } = useOfflineSync();
 
   // Active Tab: 'attendance' | 'notes' | 'extracurricular'
   const [activeTab, setActiveTab] = useState<'attendance' | 'notes' | 'extracurricular'>('attendance');
@@ -43,11 +56,25 @@ export const Attendance: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Tab 1: Attendance state
+  // Tab 1: Attendance state & offline drafts
   const [attendances, setAttendances] = useState<AttendanceItem[]>([]);
+  const [hasUnsavedAttendanceDraft, setHasUnsavedAttendanceDraft] = useState<boolean>(false);
+  const [lastAttendanceDraftSavedAt, setLastAttendanceDraftSavedAt] = useState<Date | null>(null);
+  const [attendanceDraftFound, setAttendanceDraftFound] = useState<{
+    attendances: AttendanceItem[];
+    savedAt: number;
+  } | null>(null);
+  const isEditingAttendanceRef = useRef<boolean>(false);
 
-  // Tab 2: Wali notes state
+  // Tab 2: Wali notes state & offline drafts
   const [notes, setNotes] = useState<WaliNoteItem[]>([]);
+  const [hasUnsavedNotesDraft, setHasUnsavedNotesDraft] = useState<boolean>(false);
+  const [lastNotesDraftSavedAt, setLastNotesDraftSavedAt] = useState<Date | null>(null);
+  const [notesDraftFound, setNotesDraftFound] = useState<{
+    notes: WaliNoteItem[];
+    savedAt: number;
+  } | null>(null);
+  const isEditingNotesRef = useRef<boolean>(false);
 
   // Tab 3: Extracurricular state
   const [extracurriculars, setExtracurriculars] = useState<ExtracurricularItem[]>([]);
@@ -60,13 +87,79 @@ export const Attendance: React.FC = () => {
     keterangan: '',
   });
 
-  // Fetch rombels on mount
+  // Debounced auto-save presensi ke IndexedDB (500ms)
+  useEffect(() => {
+    if (!isEditingAttendanceRef.current || !selectedRombelId || attendances.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const draftKey = `attendance:${selectedRombelId}:all`;
+      await saveDraft(
+        draftKey,
+        'attendance',
+        {
+          attendances,
+          savedAt: Date.now(),
+        },
+        {
+          rombelId: selectedRombelId,
+          teacherId: user?.id,
+        }
+      );
+      setLastAttendanceDraftSavedAt(new Date());
+      setHasUnsavedAttendanceDraft(true);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [attendances, selectedRombelId, user?.id]);
+
+  // Debounced auto-save catatan wali ke IndexedDB (500ms)
+  useEffect(() => {
+    if (!isEditingNotesRef.current || !selectedRombelId || notes.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const draftKey = `notes:${selectedRombelId}:all`;
+      await saveDraft(
+        draftKey,
+        'notes',
+        {
+          notes,
+          savedAt: Date.now(),
+        },
+        {
+          rombelId: selectedRombelId,
+          teacherId: user?.id,
+        }
+      );
+      setLastNotesDraftSavedAt(new Date());
+      setHasUnsavedNotesDraft(true);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [notes, selectedRombelId, user?.id]);
+
+  // Fetch rombels on mount with offline cache fallback
   useEffect(() => {
     const fetchRombels = async () => {
       try {
         setLoading(true);
-        const res = await masterService.getRombels();
-        const list = (res.rombels || []).filter((r: Rombel) => (r.student_count || 0) > 0);
+        let list: Rombel[] = [];
+        try {
+          const res = await masterService.getRombels();
+          list = (res.rombels || []).filter((r: Rombel) => (r.student_count || 0) > 0);
+          saveDraft('cache:rombels', 'attendance', list);
+        } catch (fetchErr) {
+          const cached = await getDraft<Rombel[]>('cache:rombels');
+          if (cached && cached.length > 0) {
+            list = cached;
+          } else {
+            throw fetchErr;
+          }
+        }
+
         setRombels(list);
 
         if (isWaliKelas && user?.wali_kelas_rombel?.id) {
@@ -84,8 +177,8 @@ export const Attendance: React.FC = () => {
     fetchRombels();
   }, [isWaliKelas, user]);
 
-  // Fetch data depending on active tab & selected rombel
-  const fetchTabData = async () => {
+  // Fetch data depending on active tab & selected rombel with offline draft detection
+  const fetchTabData = useCallback(async () => {
     if (!selectedRombelId) return;
 
     try {
@@ -93,11 +186,67 @@ export const Attendance: React.FC = () => {
       setError(null);
 
       if (activeTab === 'attendance') {
-        const res = await gradeService.getAttendance(selectedRombelId);
-        setAttendances(res.attendances || []);
+        const draftKey = `attendance:${selectedRombelId}:all`;
+        isEditingAttendanceRef.current = false;
+        const localDraft = await getDraft<{
+          attendances: AttendanceItem[];
+          savedAt: number;
+        }>(draftKey);
+
+        try {
+          const res = await gradeService.getAttendance(selectedRombelId);
+          setAttendances(res.attendances || []);
+
+          if (localDraft && localDraft.attendances && localDraft.attendances.length > 0) {
+            setAttendanceDraftFound(localDraft);
+          } else {
+            setAttendanceDraftFound(null);
+          }
+          setHasUnsavedAttendanceDraft(false);
+        } catch (fetchErr: any) {
+          if (localDraft && localDraft.attendances && localDraft.attendances.length > 0) {
+            setAttendances(localDraft.attendances);
+            setHasUnsavedAttendanceDraft(true);
+            setLastAttendanceDraftSavedAt(new Date(localDraft.savedAt));
+            setAttendanceDraftFound(null);
+            setSuccessMessage(
+              `Mode Offline: Menampilkan draf presensi lokal komputer Anda (tersimpan ${new Date(localDraft.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}).`
+            );
+            return;
+          }
+          throw fetchErr;
+        }
       } else if (activeTab === 'notes') {
-        const res = await gradeService.getWaliNotes(selectedRombelId);
-        setNotes(res.notes || []);
+        const draftKey = `notes:${selectedRombelId}:all`;
+        isEditingNotesRef.current = false;
+        const localDraft = await getDraft<{
+          notes: WaliNoteItem[];
+          savedAt: number;
+        }>(draftKey);
+
+        try {
+          const res = await gradeService.getWaliNotes(selectedRombelId);
+          setNotes(res.notes || []);
+
+          if (localDraft && localDraft.notes && localDraft.notes.length > 0) {
+            setNotesDraftFound(localDraft);
+          } else {
+            setNotesDraftFound(null);
+          }
+          setHasUnsavedNotesDraft(false);
+        } catch (fetchErr: any) {
+          if (localDraft && localDraft.notes && localDraft.notes.length > 0) {
+            setNotes(localDraft.notes);
+            setHasUnsavedNotesDraft(true);
+            setLastNotesDraftSavedAt(new Date(localDraft.savedAt));
+            setNotesDraftFound(null);
+            setSuccessMessage(
+              `Mode Offline: Menampilkan draf catatan wali kelas lokal komputer Anda (tersimpan ${new Date(localDraft.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}).`
+            );
+            return;
+          }
+          throw fetchErr;
+        }
       } else if (activeTab === 'extracurricular') {
         const res = await gradeService.getExtracurriculars(selectedRombelId);
         setExtracurriculars(res.extracurriculars || []);
@@ -107,14 +256,15 @@ export const Attendance: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedRombelId, activeTab]);
 
   useEffect(() => {
     fetchTabData();
-  }, [selectedRombelId, activeTab]);
+  }, [fetchTabData]);
 
   // Attendance handlers
   const handleAttendanceChange = (studentId: string, field: 'sakit' | 'izin' | 'tanpa_keterangan', valStr: string) => {
+    isEditingAttendanceRef.current = true;
     let val = parseInt(valStr, 10);
     if (isNaN(val) || val < 0) val = 0;
 
@@ -129,6 +279,7 @@ export const Attendance: React.FC = () => {
   };
 
   const handleIncrementAttendance = (studentId: string, field: 'sakit' | 'izin' | 'tanpa_keterangan') => {
+    isEditingAttendanceRef.current = true;
     setAttendances((prev) =>
       prev.map((item) => {
         if (item.student_id !== studentId) return item;
@@ -142,20 +293,95 @@ export const Attendance: React.FC = () => {
   const handleSaveAttendance = async () => {
     if (!selectedRombelId || attendances.length === 0) return;
 
+    const draftKey = `attendance:${selectedRombelId}:all`;
+    const payload = {
+      rombel_id: selectedRombelId,
+      attendances: attendances.map((a) => ({
+        student_id: a.student_id,
+        sakit: a.sakit,
+        izin: a.izin,
+        tanpa_keterangan: a.tanpa_keterangan,
+      })),
+    };
+
     try {
       setSaving(true);
       setError(null);
-      await gradeService.batchSaveAttendance(
-        selectedRombelId,
-        attendances.map((a) => ({
-          student_id: a.student_id,
-          sakit: a.sakit,
-          izin: a.izin,
-          tanpa_keterangan: a.tanpa_keterangan,
-        }))
-      );
-      setSuccessMessage('Presensi kehadiran siswa berhasil disimpan!');
-      setTimeout(() => setSuccessMessage(null), 4000);
+      setSuccessMessage(null);
+
+      if (!isOnline) {
+        // Mode Offline: Simpan langsung ke Outbox
+        await enqueueOutbox({
+          action: 'SAVE_ATTENDANCE',
+          endpoint: '/attendance/batch',
+          method: 'POST',
+          payload,
+        });
+
+        await saveDraft(
+          draftKey,
+          'attendance',
+          {
+            attendances,
+            savedAt: Date.now(),
+          },
+          {
+            rombelId: selectedRombelId,
+            teacherId: user?.id,
+          }
+        );
+
+        setHasUnsavedAttendanceDraft(false);
+        setAttendanceDraftFound(null);
+        isEditingAttendanceRef.current = false;
+        setSuccessMessage(`Data presensi ${attendances.length} siswa berhasil disimpan ke komputer lokal (Offline). Nilai akan otomatis dikirim saat terhubung kembali.`);
+        outboxWorker.notifyQueueChanged();
+        return;
+      }
+
+      // Mode Online: Coba simpan ke server
+      try {
+        await gradeService.batchSaveAttendance(
+          selectedRombelId,
+          payload.attendances
+        );
+        setSuccessMessage('Presensi kehadiran siswa berhasil disimpan!');
+        setTimeout(() => setSuccessMessage(null), 4000);
+
+        await deleteDraft(draftKey);
+        setHasUnsavedAttendanceDraft(false);
+        setAttendanceDraftFound(null);
+        isEditingAttendanceRef.current = false;
+        fetchTabData();
+      } catch (serverErr: any) {
+        console.warn('Gagal simpan presensi ke server, beralih ke antrean offline:', serverErr);
+
+        await enqueueOutbox({
+          action: 'SAVE_ATTENDANCE',
+          endpoint: '/attendance/batch',
+          method: 'POST',
+          payload,
+        });
+
+        await saveDraft(
+          draftKey,
+          'attendance',
+          {
+            attendances,
+            savedAt: Date.now(),
+          },
+          {
+            rombelId: selectedRombelId,
+            teacherId: user?.id,
+          }
+        );
+
+        setHasUnsavedAttendanceDraft(false);
+        setAttendanceDraftFound(null);
+        isEditingAttendanceRef.current = false;
+        setSuccessMessage('Koneksi server terganggu saat mengirim. Data presensi telah diamankan ke antrean offline komputer Anda dan akan otomatis disinkronkan.');
+        outboxWorker.notifyQueueChanged();
+      }
     } catch (err: any) {
       setError(err.message || 'Gagal menyimpan presensi');
     } finally {
@@ -165,12 +391,14 @@ export const Attendance: React.FC = () => {
 
   // Notes handlers
   const handleNoteChange = (studentId: string, text: string) => {
+    isEditingNotesRef.current = true;
     setNotes((prev) =>
       prev.map((n) => (n.student_id === studentId ? { ...n, catatan: text } : n))
     );
   };
 
   const handleApplyNoteTemplate = (studentId: string, template: string) => {
+    isEditingNotesRef.current = true;
     setNotes((prev) =>
       prev.map((n) => (n.student_id === studentId ? { ...n, catatan: template } : n))
     );
@@ -179,18 +407,93 @@ export const Attendance: React.FC = () => {
   const handleSaveNotes = async () => {
     if (!selectedRombelId || notes.length === 0) return;
 
+    const draftKey = `notes:${selectedRombelId}:all`;
+    const payload = {
+      rombel_id: selectedRombelId,
+      notes: notes.map((n) => ({
+        student_id: n.student_id,
+        catatan: n.catatan,
+      })),
+    };
+
     try {
       setSaving(true);
       setError(null);
-      await gradeService.batchSaveWaliNotes(
-        selectedRombelId,
-        notes.map((n) => ({
-          student_id: n.student_id,
-          catatan: n.catatan,
-        }))
-      );
-      setSuccessMessage('Catatan perkembangan siswa berhasil disimpan!');
-      setTimeout(() => setSuccessMessage(null), 4000);
+      setSuccessMessage(null);
+
+      if (!isOnline) {
+        // Mode Offline: Simpan langsung ke Outbox
+        await enqueueOutbox({
+          action: 'SAVE_WALI_NOTES',
+          endpoint: '/wali-notes/batch',
+          method: 'POST',
+          payload,
+        });
+
+        await saveDraft(
+          draftKey,
+          'notes',
+          {
+            notes,
+            savedAt: Date.now(),
+          },
+          {
+            rombelId: selectedRombelId,
+            teacherId: user?.id,
+          }
+        );
+
+        setHasUnsavedNotesDraft(false);
+        setNotesDraftFound(null);
+        isEditingNotesRef.current = false;
+        setSuccessMessage(`Catatan wali kelas ${notes.length} siswa berhasil disimpan ke komputer lokal (Offline). Nilai akan otomatis dikirim saat terhubung kembali.`);
+        outboxWorker.notifyQueueChanged();
+        return;
+      }
+
+      // Mode Online: Coba simpan ke server
+      try {
+        await gradeService.batchSaveWaliNotes(
+          selectedRombelId,
+          payload.notes
+        );
+        setSuccessMessage('Catatan perkembangan siswa berhasil disimpan!');
+        setTimeout(() => setSuccessMessage(null), 4000);
+
+        await deleteDraft(draftKey);
+        setHasUnsavedNotesDraft(false);
+        setNotesDraftFound(null);
+        isEditingNotesRef.current = false;
+        fetchTabData();
+      } catch (serverErr: any) {
+        console.warn('Gagal simpan catatan ke server, beralih ke antrean offline:', serverErr);
+
+        await enqueueOutbox({
+          action: 'SAVE_WALI_NOTES',
+          endpoint: '/wali-notes/batch',
+          method: 'POST',
+          payload,
+        });
+
+        await saveDraft(
+          draftKey,
+          'notes',
+          {
+            notes,
+            savedAt: Date.now(),
+          },
+          {
+            rombelId: selectedRombelId,
+            teacherId: user?.id,
+          }
+        );
+
+        setHasUnsavedNotesDraft(false);
+        setNotesDraftFound(null);
+        isEditingNotesRef.current = false;
+        setSuccessMessage('Koneksi server terganggu saat mengirim. Catatan wali telah diamankan ke antrean offline komputer Anda dan akan otomatis disinkronkan.');
+        outboxWorker.notifyQueueChanged();
+      }
     } catch (err: any) {
       setError(err.message || 'Gagal menyimpan catatan');
     } finally {
@@ -284,13 +587,53 @@ export const Attendance: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-bold tracking-tight text-m3-on-surface">
               Kehadiran & Catatan Siswa
             </h1>
             <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-m3-secondary-container text-m3-on-secondary-container border border-m3-secondary/20">
               Pengelolaan Wali Kelas
             </span>
+
+            {/* Offline & Connection Status Indicator */}
+            {!isOnline ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/30">
+                <WifiOff className="w-3.5 h-3.5" />
+                <span>Mode Offline (Penyimpanan Lokal Aktif)</span>
+              </span>
+            ) : unsyncedCount > 0 ? (
+              <span className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-500/15 text-blue-800 dark:text-blue-300 border border-blue-500/30">
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{unsyncedCount} data antrean offline</span>
+                <button
+                  type="button"
+                  onClick={() => triggerSync()}
+                  disabled={isSyncing}
+                  className="underline hover:text-blue-950 dark:hover:text-blue-200 font-bold cursor-pointer"
+                >
+                  {isSyncing ? 'Menyinkronkan...' : 'Sinkronkan Sekarang'}
+                </button>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-500/30">
+                <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>Server Terhubung</span>
+              </span>
+            )}
+
+            {activeTab === 'attendance' && hasUnsavedAttendanceDraft && lastAttendanceDraftSavedAt && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs text-m3-on-surface-variant bg-m3-surface-container border border-m3-outline-variant/40">
+                <Database className="w-3.5 h-3.5 text-m3-primary" />
+                <span>Draf presensi tersimpan ({lastAttendanceDraftSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })})</span>
+              </span>
+            )}
+
+            {activeTab === 'notes' && hasUnsavedNotesDraft && lastNotesDraftSavedAt && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs text-m3-on-surface-variant bg-m3-surface-container border border-m3-outline-variant/40">
+                <Database className="w-3.5 h-3.5 text-m3-primary" />
+                <span>Draf catatan tersimpan ({lastNotesDraftSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })})</span>
+              </span>
+            )}
           </div>
           <p className="text-sm text-m3-on-surface-variant mt-1">
             Rekap presensi kehadiran, catatan perkembangan siswa, dan penilaian kegiatan ekstrakurikuler.
@@ -333,6 +676,98 @@ export const Attendance: React.FC = () => {
         </div>
       </div>
 
+      {/* Draft Recovery Banner for Attendance */}
+      {activeTab === 'attendance' && attendanceDraftFound && (
+        <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <Database className="w-5 h-5 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+            <div>
+              <p className="font-bold text-amber-950 dark:text-amber-200">
+                Ditemukan draf presensi lokal yang belum disimpan ke server
+              </p>
+              <p className="text-amber-900/90 dark:text-amber-300/90 mt-0.5">
+                Tersimpan di komputer ini pada {new Date(attendanceDraftFound.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}. Pulihkan draf untuk melanjutkan perubahan presensi yang belum sempat terkirim.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                isEditingAttendanceRef.current = true;
+                setAttendances(attendanceDraftFound.attendances);
+                setHasUnsavedAttendanceDraft(true);
+                setLastAttendanceDraftSavedAt(new Date(attendanceDraftFound.savedAt));
+                setAttendanceDraftFound(null);
+                setSuccessMessage('Draf presensi lokal berhasil dipulihkan!');
+                setTimeout(() => setSuccessMessage(null), 4000);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition cursor-pointer shadow-sm"
+            >
+              Pulihkan Draf
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                const draftKey = `attendance:${selectedRombelId}:all`;
+                await deleteDraft(draftKey);
+                setAttendanceDraftFound(null);
+                setHasUnsavedAttendanceDraft(false);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-transparent hover:bg-amber-500/20 text-amber-900 dark:text-amber-200 font-semibold text-xs transition cursor-pointer"
+            >
+              Abaikan & Hapus
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Draft Recovery Banner for Notes */}
+      {activeTab === 'notes' && notesDraftFound && (
+        <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <Database className="w-5 h-5 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+            <div>
+              <p className="font-bold text-amber-950 dark:text-amber-200">
+                Ditemukan draf catatan wali kelas yang belum disimpan ke server
+              </p>
+              <p className="text-amber-900/90 dark:text-amber-300/90 mt-0.5">
+                Tersimpan di komputer ini pada {new Date(notesDraftFound.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}. Pulihkan draf untuk melanjutkan perubahan catatan yang belum sempat terkirim.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                isEditingNotesRef.current = true;
+                setNotes(notesDraftFound.notes);
+                setHasUnsavedNotesDraft(true);
+                setLastNotesDraftSavedAt(new Date(notesDraftFound.savedAt));
+                setNotesDraftFound(null);
+                setSuccessMessage('Draf catatan wali kelas berhasil dipulihkan!');
+                setTimeout(() => setSuccessMessage(null), 4000);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition cursor-pointer shadow-sm"
+            >
+              Pulihkan Draf
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                const draftKey = `notes:${selectedRombelId}:all`;
+                await deleteDraft(draftKey);
+                setNotesDraftFound(null);
+                setHasUnsavedNotesDraft(false);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-transparent hover:bg-amber-500/20 text-amber-900 dark:text-amber-200 font-semibold text-xs transition cursor-pointer"
+            >
+              Abaikan & Hapus
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Alerts */}
       {error && (
         <div
@@ -373,7 +808,15 @@ export const Attendance: React.FC = () => {
               label="Rombongan Belajar (Kelas)"
               rombels={user?.wali_kelas_rombel ? rombels.filter((r) => r.id === user.wali_kelas_rombel?.id) : rombels}
               selectedRombelId={selectedRombelId}
-              onSelect={(id) => setSelectedRombelId(id)}
+              onSelect={(id) => {
+                isEditingAttendanceRef.current = false;
+                isEditingNotesRef.current = false;
+                setAttendanceDraftFound(null);
+                setNotesDraftFound(null);
+                setHasUnsavedAttendanceDraft(false);
+                setHasUnsavedNotesDraft(false);
+                setSelectedRombelId(id);
+              }}
               filterEmpty={true}
             />
           </div>

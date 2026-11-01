@@ -13,6 +13,8 @@ import {
   BookOpen,
   GraduationCap,
   Layers,
+  Target,
+  Building2,
   X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -81,12 +83,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen = false, onCloseMob
 
   const navItems = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard, show: true },
+    { to: '/learning-objectives', label: 'Tujuan Pembelajaran (TP)', icon: Target, show: true },
     { to: '/grades/input', label: 'Input Nilai Mapel', icon: Award, show: !isAdmin },
     { to: '/grades/recap', label: 'Rekap Nilai Siswa', icon: FileSpreadsheet, show: isAdmin || isWaliKelas },
     { to: '/students', label: 'Data Peserta Didik', icon: Users, show: true },
     { to: '/settings/teachers', label: 'Manajemen Guru & PTK', icon: GraduationCap, show: isAdmin },
     { to: '/attendance', label: 'Kehadiran & Catatan', icon: CalendarCheck, show: isWaliKelas },
     { to: '/reports', label: 'Cetak Rapor', icon: Printer, show: isAdmin || isWaliKelas },
+    { to: '/settings/school', label: 'Identitas Sekolah', icon: Building2, show: isAdmin },
     { to: '/settings/subjects', label: 'Mata Pelajaran & TP', icon: BookOpen, show: isAdmin },
     { to: '/settings/subject-groups', label: 'Kelompok Mata Pelajaran', icon: Layers, show: isAdmin },
     { to: '/settings/semester', label: 'Manajemen Semester', icon: CalendarCheck, show: isAdmin },

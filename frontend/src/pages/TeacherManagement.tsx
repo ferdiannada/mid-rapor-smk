@@ -21,6 +21,7 @@ import {
   X,
   Clock,
   Phone,
+  Eye,
 } from 'lucide-react';
 import { masterService } from '../services/master.service';
 import { TeacherItem, Rombel, Subject, TeachingAssignment } from '../types';
@@ -28,6 +29,7 @@ import { Modal } from '../components/Modal';
 import { M3Button, M3Card, M3Chip, M3TextField, M3Dialog } from '../components/m3';
 import { PaginationBar } from '../components/common/PaginationBar';
 import { SearchableRombelSelect } from '../components/common/SearchableRombelSelect';
+import { SearchableRombelMultiSelect } from '../components/common/SearchableRombelMultiSelect';
 import { SearchableTeacherSelect } from '../components/common/SearchableTeacherSelect';
 import { SearchableSubjectSelect } from '../components/common/SearchableSubjectSelect';
 
@@ -112,6 +114,8 @@ export const TeacherManagement: React.FC = () => {
   // Target object state for modals
   const [selectedTeacher, setSelectedTeacher] = useState<TeacherItem | null>(null);
   const [selectedAssignment, setSelectedAssignment] = useState<TeachingAssignment | null>(null);
+  const [selectedTeacherIdForDetail, setSelectedTeacherIdForDetail] = useState<string | null>(null);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
 
   // Form states: Add Teacher
   const [newTeacherName, setNewTeacherName] = useState('');
@@ -141,7 +145,7 @@ export const TeacherManagement: React.FC = () => {
   // Form states: Add Assignment
   const [assignFormGuruId, setAssignFormGuruId] = useState('');
   const [assignFormSubjectId, setAssignFormSubjectId] = useState('');
-  const [assignFormRombelId, setAssignFormRombelId] = useState('');
+  const [assignFormRombelIds, setAssignFormRombelIds] = useState<string[]>([]);
   const [assignFormJam, setAssignFormJam] = useState<number | string>('');
 
   // Form states: Add Rombel
@@ -360,18 +364,20 @@ export const TeacherManagement: React.FC = () => {
   // -------------------------------------------------------------
 
   const handleOpenAddAssignment = () => {
-    const defaultRombelId = activeRombels[0]?.id || rombels[0]?.id || '';
     const activeTeacherList = teachers.filter((t) => t.is_active !== false);
     setAssignFormGuruId(activeTeacherList[0]?.id || '');
     setAssignFormSubjectId(subjects[0]?.id || '');
-    setAssignFormRombelId(defaultRombelId);
+    setAssignFormRombelIds([]);
     setAssignFormJam('');
     setIsAddAssignmentOpen(true);
   };
 
   const handleCreateAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!assignFormGuruId || !assignFormSubjectId || !assignFormRombelId) return;
+    if (!assignFormGuruId || !assignFormSubjectId || assignFormRombelIds.length === 0) {
+      showBanner('error', 'Guru, mata pelajaran, dan minimal satu kelas wajib dipilih.');
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -379,7 +385,7 @@ export const TeacherManagement: React.FC = () => {
       const res = await masterService.createTeachingAssignment({
         guru_id: assignFormGuruId,
         subject_id: assignFormSubjectId,
-        rombel_id: assignFormRombelId,
+        rombel_ids: assignFormRombelIds,
         ...(jamVal > 0 ? { jam_per_minggu: jamVal } : {}),
       });
 
@@ -387,7 +393,7 @@ export const TeacherManagement: React.FC = () => {
       showBanner('success', res.message || 'Penugasan mengajar berhasil ditambahkan.');
       await loadAllData(true);
     } catch (err: any) {
-      showBanner('error', err.response?.data?.message || 'Gagal menambahkan penugasan.');
+      showBanner('error', err.response?.data?.message || err.message || 'Gagal menambahkan penugasan.');
     } finally {
       setIsSubmitting(false);
     }
@@ -412,6 +418,19 @@ export const TeacherManagement: React.FC = () => {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleOpenTeacherDetail = (guruId: string) => {
+    setSelectedTeacherIdForDetail(guruId);
+    setIsDetailModalOpen(true);
+  };
+
+  const handleOpenAddAssignmentForTeacher = (teacherId: string) => {
+    setAssignFormGuruId(teacherId);
+    setAssignFormSubjectId(subjects[0]?.id || '');
+    setAssignFormRombelIds([]);
+    setAssignFormJam('');
+    setIsAddAssignmentOpen(true);
   };
 
   // -------------------------------------------------------------
@@ -477,29 +496,7 @@ export const TeacherManagement: React.FC = () => {
     });
   }, [teachers, teacherSearch, roleFilter, statusFilter, waliFilter, getTeacherWaliRombels]);
 
-  const filteredAssignments = useMemo(() => {
-    return assignments.filter((a) => {
-      const search = assignmentSearch.toLowerCase();
-      const subjectName = a.subject?.nama?.toLowerCase() || '';
-      const teacherName = a.guru?.name?.toLowerCase() || '';
-      const rombelName = a.rombel?.name?.toLowerCase() || '';
-
-      const matchSearch =
-        !search ||
-        subjectName.includes(search) ||
-        teacherName.includes(search) ||
-        rombelName.includes(search);
-
-      const matchRombel =
-        assignmentRombelFilter === 'all' || a.rombel_id === assignmentRombelFilter;
-
-      const matchTeacher =
-        assignmentTeacherFilter === 'all' || a.guru_id === assignmentTeacherFilter;
-
-      return matchSearch && matchRombel && matchTeacher;
-    });
-  }, [assignments, assignmentSearch, assignmentRombelFilter, assignmentTeacherFilter]);
-
+  // Filtered Rombels
   const filteredRombels = useMemo(() => {
     return rombels.filter((r) => {
       const search = rombelSearch.toLowerCase();
@@ -533,16 +530,120 @@ export const TeacherManagement: React.FC = () => {
     return Math.max(1, Math.ceil(filteredTeachers.length / teacherPageSize));
   }, [filteredTeachers.length, teacherPageSize]);
 
-  const paginatedAssignments = useMemo(() => {
-    if (assignmentPageSize <= 0) return filteredAssignments;
+  // Grouped assignments per teacher (Option A: 1 baris per guru)
+  const groupedAssignments = useMemo(() => {
+    const map = new Map<string, {
+      guru: TeacherItem | any;
+      guru_id: string;
+      total_assignments: number;
+      total_jam: number;
+      unique_subjects: { id: string; nama: string; kelompok?: string }[];
+      unique_rombels: { id: string; name: string; tingkat?: number }[];
+      assignments: TeachingAssignment[];
+      has_manual_override: boolean;
+      has_dapodik: boolean;
+    }>();
+
+    assignments.forEach((assign) => {
+      const guruId = assign.guru_id;
+      if (!guruId) return;
+
+      if (!map.has(guruId)) {
+        const foundTeacher: any = teachers.find((t) => t.id === guruId) || assign.guru || {
+          id: guruId,
+          name: 'Guru Tidak Diketahui',
+          email: '',
+          role: 'guru',
+          is_initial_password: false,
+        };
+
+        map.set(guruId, {
+          guru: foundTeacher,
+          guru_id: guruId,
+          total_assignments: 0,
+          total_jam: 0,
+          unique_subjects: [],
+          unique_rombels: [],
+          assignments: [],
+          has_manual_override: false,
+          has_dapodik: false,
+        });
+      }
+
+      const group = map.get(guruId)!;
+      group.assignments.push(assign);
+      group.total_assignments += 1;
+      group.total_jam += (assign.jam_per_minggu || 0);
+
+      if (assign.is_manual_override) {
+        group.has_manual_override = true;
+      } else {
+        group.has_dapodik = true;
+      }
+
+      if (assign.subject && !group.unique_subjects.some((s) => s.id === assign.subject_id)) {
+        group.unique_subjects.push({
+          id: assign.subject_id,
+          nama: assign.subject.nama,
+          kelompok: assign.subject.kelompok,
+        });
+      }
+
+      if (assign.rombel && !group.unique_rombels.some((r) => r.id === assign.rombel_id)) {
+        group.unique_rombels.push({
+          id: assign.rombel_id,
+          name: assign.rombel.name,
+          tingkat: assign.rombel.tingkat,
+        });
+      }
+    });
+
+    return Array.from(map.values()).sort((a, b) => {
+      const nameA = a.guru?.name || '';
+      const nameB = b.guru?.name || '';
+      return nameA.localeCompare(nameB);
+    });
+  }, [assignments, teachers]);
+
+  const currentDetailGroup = useMemo(() => {
+    if (!selectedTeacherIdForDetail) return null;
+    return groupedAssignments.find((g) => g.guru_id === selectedTeacherIdForDetail) || null;
+  }, [selectedTeacherIdForDetail, groupedAssignments]);
+
+  const filteredTeacherAssignmentGroups = useMemo(() => {
+    return groupedAssignments.filter((g) => {
+      const search = assignmentSearch.toLowerCase().trim();
+      const teacherName = g.guru?.name?.toLowerCase() || '';
+      const teacherNip = (g.guru as any)?.nip_nik?.toLowerCase() || '';
+
+      const matchSearch =
+        !search ||
+        teacherName.includes(search) ||
+        teacherNip.includes(search) ||
+        g.unique_subjects.some((s) => s.nama.toLowerCase().includes(search)) ||
+        g.unique_rombels.some((r) => r.name.toLowerCase().includes(search));
+
+      const matchTeacher =
+        assignmentTeacherFilter === 'all' || g.guru_id === assignmentTeacherFilter;
+
+      const matchRombel =
+        assignmentRombelFilter === 'all' ||
+        g.unique_rombels.some((r) => r.id === assignmentRombelFilter);
+
+      return matchSearch && matchTeacher && matchRombel;
+    });
+  }, [groupedAssignments, assignmentSearch, assignmentTeacherFilter, assignmentRombelFilter]);
+
+  const paginatedTeacherGroups = useMemo(() => {
+    if (assignmentPageSize <= 0) return filteredTeacherAssignmentGroups;
     const start = (assignmentPage - 1) * assignmentPageSize;
-    return filteredAssignments.slice(start, start + assignmentPageSize);
-  }, [filteredAssignments, assignmentPage, assignmentPageSize]);
+    return filteredTeacherAssignmentGroups.slice(start, start + assignmentPageSize);
+  }, [filteredTeacherAssignmentGroups, assignmentPage, assignmentPageSize]);
 
   const assignmentTotalPages = useMemo(() => {
     if (assignmentPageSize <= 0) return 1;
-    return Math.max(1, Math.ceil(filteredAssignments.length / assignmentPageSize));
-  }, [filteredAssignments.length, assignmentPageSize]);
+    return Math.max(1, Math.ceil(filteredTeacherAssignmentGroups.length / assignmentPageSize));
+  }, [filteredTeacherAssignmentGroups.length, assignmentPageSize]);
 
   const paginatedRombels = useMemo(() => {
     if (rombelPageSize <= 0) return filteredRombels;
@@ -796,7 +897,7 @@ export const TeacherManagement: React.FC = () => {
           className="p-4 flex flex-col justify-between cursor-pointer hover:border-m3-primary/30 transition-all"
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-m3-on-surface-variant">Beban Pembelajaran</span>
+            <span className="text-xs font-bold uppercase tracking-wider text-m3-on-surface-variant">Penugasan Mengajar</span>
             <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
               <BookOpen className="w-4 h-4" />
             </div>
@@ -804,8 +905,7 @@ export const TeacherManagement: React.FC = () => {
           <div className="mt-2.5">
             <p className="text-3xl font-extrabold text-m3-on-surface tracking-tight">{stats.totalAssignments}</p>
             <p className="text-xs text-m3-on-surface-variant font-medium mt-1.5 flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5 text-m3-outline" />
-              Total <strong className="text-m3-on-surface font-bold">{stats.totalHours} JP</strong> per minggu
+              Alokasi Guru & Mapel
             </p>
           </div>
         </M3Card>
@@ -1320,7 +1420,7 @@ export const TeacherManagement: React.FC = () => {
                 <p className="text-sm font-bold text-slate-700">Memuat penugasan mengajar...</p>
                 <p className="text-xs text-slate-400 mt-1">Mengambil data alokasi pembelajaran dan beban jam guru</p>
               </div>
-            ) : filteredAssignments.length === 0 ? (
+            ) : filteredTeacherAssignmentGroups.length === 0 ? (
               <div className="py-16 text-center text-slate-500 px-4">
                 <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
                   <BookOpen className="w-6 h-6" />
@@ -1357,51 +1457,69 @@ export const TeacherManagement: React.FC = () => {
                   <table className="w-full text-left border-collapse min-w-[760px]">
                     <thead>
                       <tr className="bg-slate-50/90 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                        <th scope="col" className="py-3 px-4">Mata Pelajaran</th>
-                        <th scope="col" className="py-3 px-4">Kelas / Rombel</th>
                         <th scope="col" className="py-3 px-4">Guru Pengampu</th>
-                        <th scope="col" className="py-3 px-4">Beban Jam</th>
+                        <th scope="col" className="py-3 px-4">Mata Pelajaran</th>
+                        <th scope="col" className="py-3 px-4">Kelas / Rombel yang Diampu</th>
                         <th scope="col" className="py-3 px-4">Sumber Data</th>
                         <th scope="col" className="py-3 px-4 text-right">Aksi</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs sm:text-sm">
-                      {paginatedAssignments.map((assign) => (
-                        <tr key={assign.id} className="hover:bg-slate-50/80 transition-colors">
+                      {paginatedTeacherGroups.map((group) => (
+                        <tr key={group.guru_id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-9 h-9 rounded-xl bg-blue-50 text-m3-primary border border-blue-100 flex items-center justify-center font-bold text-xs shrink-0">
+                                {group.guru?.name ? group.guru.name.substring(0, 2).toUpperCase() : 'G'}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="font-bold text-slate-900 truncate">{group.guru?.name || 'Guru Tidak Diketahui'}</p>
+                                <p className="text-[11px] font-mono text-slate-500">{(group.guru as any)?.nip_nik || 'Tanpa NIP'}</p>
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 px-4">
+                            <div className="flex flex-wrap gap-1 max-w-[280px]">
+                              {group.unique_subjects.slice(0, 2).map((s) => (
+                                <span
+                                  key={s.id}
+                                  className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-200/60 truncate max-w-[180px]"
+                                  title={s.nama}
+                                >
+                                  {s.nama}
+                                </span>
+                              ))}
+                              {group.unique_subjects.length > 2 && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-200 text-slate-700">
+                                  +{group.unique_subjects.length - 2} mapel
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
                           <td className="py-3.5 px-4">
                             <div>
-                              <p className="font-bold text-slate-900">{assign.subject?.nama || 'Mata Pelajaran Tidak Diketahui'}</p>
-                              <span className="inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
-                                {assign.subject?.kelompok ? `Kelompok ${assign.subject.kelompok}` : 'Umum'}
+                              <div className="flex items-center gap-1.5">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold bg-blue-50 text-m3-primary border border-blue-100">
+                                  {group.unique_rombels.length} Kelas
+                                </span>
+                              </div>
+                              <p
+                                className="text-[11px] text-slate-500 mt-1 truncate max-w-[220px]"
+                                title={group.unique_rombels.map((r) => r.name).join(', ')}
+                              >
+                                {group.unique_rombels.map((r) => r.name).join(', ') || '-'}
+                              </p>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 px-4">
+                            {group.has_manual_override && group.has_dapodik ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                                Campuran
                               </span>
-                            </div>
-                          </td>
-
-                          <td className="py-3.5 px-4">
-                            <div className="flex items-center gap-2">
-                              <span className="w-7 h-7 rounded-lg bg-blue-50 text-m3-primary flex items-center justify-center font-bold text-xs border border-blue-100">
-                                {assign.rombel?.tingkat || '-'}
-                              </span>
-                              <span className="font-bold text-slate-900">{assign.rombel?.name || '-'}</span>
-                            </div>
-                          </td>
-
-                          <td className="py-3.5 px-4">
-                            <div>
-                              <p className="font-bold text-slate-900">{assign.guru?.name || '-'}</p>
-                              <p className="text-[11px] font-mono text-slate-500">{assign.guru?.nip_nik || 'Tanpa NIP'}</p>
-                            </div>
-                          </td>
-
-                          <td className="py-3.5 px-4">
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-slate-100 text-slate-800">
-                              <Clock className="w-3.5 h-3.5 text-slate-500" />
-                              {assign.jam_per_minggu || 0} JP / minggu
-                            </span>
-                          </td>
-
-                          <td className="py-3.5 px-4">
-                            {assign.is_manual_override ? (
+                            ) : group.has_manual_override ? (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
                                 Manual Override
                               </span>
@@ -1415,12 +1533,12 @@ export const TeacherManagement: React.FC = () => {
                           <td className="py-3.5 px-4 text-right">
                             <button
                               type="button"
-                              onClick={() => handleOpenDeleteAssignment(assign)}
-                              className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer min-h-[36px] min-w-[36px] inline-flex items-center justify-center"
-                              title="Hapus Penugasan Ini"
-                              aria-label="Hapus penugasan mengajar"
+                              onClick={() => handleOpenTeacherDetail(group.guru_id)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-m3-primary hover:text-white text-slate-700 font-bold text-xs transition-colors cursor-pointer min-h-[36px]"
+                              title="Lihat rincian kelas dan mata pelajaran yang diampu guru ini"
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Detail ({group.total_assignments})</span>
                             </button>
                           </td>
                         </tr>
@@ -1432,10 +1550,10 @@ export const TeacherManagement: React.FC = () => {
                 <PaginationBar
                   currentPage={assignmentPage}
                   totalPages={assignmentTotalPages}
-                  totalItems={filteredAssignments.length}
+                  totalItems={filteredTeacherAssignmentGroups.length}
                   pageSize={assignmentPageSize}
                   pageSizeOptions={[10, 20, 50, 0]}
-                  itemLabel="penugasan"
+                  itemLabel="guru"
                   onPageChange={setAssignmentPage}
                   onPageSizeChange={(size) => {
                     setAssignmentPageSize(size);
@@ -2109,6 +2227,7 @@ export const TeacherManagement: React.FC = () => {
         isOpen={isAddAssignmentOpen}
         onClose={() => setIsAddAssignmentOpen(false)}
         title="Tambah Penugasan Mengajar"
+        maxWidth="max-w-xl"
       >
         <form onSubmit={handleCreateAssignment} className="space-y-4">
           <div>
@@ -2137,35 +2256,18 @@ export const TeacherManagement: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Rombongan Belajar (Kelas) <span className="text-rose-500">*</span>
-              </label>
-              <SearchableRombelSelect
-                id="assign-teaching-rombel"
-                rombels={activeRombels}
-                selectedRombelId={assignFormRombelId}
-                onSelect={(id) => setAssignFormRombelId(id)}
-                filterEmpty={false}
-                placeholder="Pilih Rombongan Belajar"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Jam Per Minggu <span className="text-slate-400 font-normal text-[11px] ml-1">(Opsional)</span>
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={40}
-                value={assignFormJam}
-                onChange={(e) => setAssignFormJam(e.target.value)}
-                placeholder="Contoh: 4"
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-m3-primary focus:ring-2 focus:ring-m3-primary/20 min-h-[44px]"
-              />
-            </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              Rombongan Belajar (Kelas) <span className="text-rose-500">* (Dapat memilih lebih dari 1 kelas)</span>
+            </label>
+            <SearchableRombelMultiSelect
+              id="assign-teaching-rombel-multi"
+              rombels={activeRombels}
+              selectedRombelIds={assignFormRombelIds}
+              onSelectionChange={(ids) => setAssignFormRombelIds(ids)}
+              filterEmpty={false}
+              placeholder="Pilih satu atau lebih rombongan belajar..."
+            />
           </div>
 
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
@@ -2178,13 +2280,131 @@ export const TeacherManagement: React.FC = () => {
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || assignFormRombelIds.length === 0}
               className="px-5 py-2.5 rounded-xl bg-m3-primary hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer min-h-[44px] disabled:opacity-50"
             >
-              {isSubmitting ? 'Menyimpan...' : 'Tambahkan Penugasan'}
+              {isSubmitting
+                ? 'Menyimpan...'
+                : assignFormRombelIds.length > 1
+                ? `Tambahkan ${assignFormRombelIds.length} Penugasan`
+                : 'Tambahkan Penugasan'}
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* 6B. Modal Detail Penugasan Guru (Opsi A) */}
+      <Modal
+        isOpen={isDetailModalOpen && !!currentDetailGroup}
+        onClose={() => setIsDetailModalOpen(false)}
+        title="Detail Penugasan Mengajar"
+        maxWidth="max-w-3xl"
+      >
+        {currentDetailGroup && (
+          <div className="space-y-4">
+            {/* Profil Guru & Rangkuman */}
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-m3-primary text-white flex items-center justify-center font-black text-sm shrink-0 shadow-xs">
+                  {currentDetailGroup.guru?.name ? currentDetailGroup.guru.name.substring(0, 2).toUpperCase() : 'G'}
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm sm:text-base leading-tight">
+                    {currentDetailGroup.guru?.name}
+                  </h3>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-1">
+                    <span className="font-mono">{(currentDetailGroup.guru as any)?.nip_nik || 'Tanpa NIP'}</span>
+                    <span>•</span>
+                    <span>{currentDetailGroup.guru?.email}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => handleOpenAddAssignmentForTeacher(currentDetailGroup.guru_id)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-m3-primary hover:bg-blue-700 text-white text-xs font-bold transition-colors cursor-pointer shadow-2xs min-h-[38px]"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Tambah Kelas</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Sub-table Rincian Mapel & Kelas */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse min-w-[560px]">
+                  <thead>
+                    <tr className="bg-slate-100/80 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                      <th scope="col" className="py-2.5 px-3.5">Mata Pelajaran</th>
+                      <th scope="col" className="py-2.5 px-3.5">Kelas / Rombel</th>
+                      <th scope="col" className="py-2.5 px-3.5">Sumber Data</th>
+                      <th scope="col" className="py-2.5 px-3.5 text-right">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {currentDetailGroup.assignments.map((assign) => (
+                      <tr key={assign.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-3.5">
+                          <p className="font-bold text-slate-900">{assign.subject?.nama || 'Mata Pelajaran'}</p>
+                          <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+                            {assign.subject?.kelompok ? `Kelompok ${assign.subject.kelompok}` : 'Umum'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3.5">
+                          <div className="flex items-center gap-2">
+                            <span className="w-6 h-6 rounded-md bg-blue-50 text-m3-primary flex items-center justify-center font-bold text-[11px] border border-blue-100">
+                              {assign.rombel?.tingkat || '-'}
+                            </span>
+                            <span className="font-bold text-slate-800">{assign.rombel?.name || '-'}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3.5">
+                          {assign.is_manual_override ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                              Manual
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-m3-primary border border-blue-200">
+                              Dapodik
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDeleteAssignment(assign)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer inline-flex items-center justify-center min-h-[32px] min-w-[32px]"
+                            title="Hapus penugasan di kelas ini"
+                            aria-label={`Hapus penugasan ${assign.subject?.nama} di kelas ${assign.rombel?.name}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <span className="text-xs text-slate-500 font-medium">
+                Total {currentDetailGroup.assignments.length} kelas/rombel diampu
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsDetailModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer min-h-[38px]"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* 7. Modal Hapus Penugasan Mengajar */}

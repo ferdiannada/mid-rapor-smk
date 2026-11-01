@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 	"rapor-smk-backend/config"
 	"rapor-smk-backend/models"
 )
@@ -748,42 +749,96 @@ func (ctrl *AdminMasterController) CreateRombel(c *gin.Context) {
 // -------------------------------------------------------------
 
 type CreateTeachingAssignmentInput struct {
-	GuruID       string `json:"guru_id" binding:"required"`
-	SubjectID    string `json:"subject_id" binding:"required"`
-	RombelID     string `json:"rombel_id" binding:"required"`
-	JamPerMinggu int    `json:"jam_per_minggu"`
+	GuruID       string   `json:"guru_id" binding:"required"`
+	SubjectID    string   `json:"subject_id" binding:"required"`
+	RombelID     string   `json:"rombel_id"`
+	RombelIDs    []string `json:"rombel_ids"`
+	JamPerMinggu int      `json:"jam_per_minggu"`
 }
 
 func (ctrl *AdminMasterController) CreateTeachingAssignment(c *gin.Context) {
 	var input CreateTeachingAssignmentInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Guru, Mata Pelajaran, dan Rombel wajib dipilih"})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Guru dan Mata Pelajaran wajib dipilih"})
+		return
+	}
+
+	targetRombelIDs := make([]string, 0)
+	seen := make(map[string]bool)
+
+	if trimmed := strings.TrimSpace(input.RombelID); trimmed != "" && !seen[trimmed] {
+		targetRombelIDs = append(targetRombelIDs, trimmed)
+		seen[trimmed] = true
+	}
+	for _, rid := range input.RombelIDs {
+		if trimmed := strings.TrimSpace(rid); trimmed != "" && !seen[trimmed] {
+			targetRombelIDs = append(targetRombelIDs, trimmed)
+			seen[trimmed] = true
+		}
+	}
+
+	if len(targetRombelIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Minimal pilih satu rombongan belajar (kelas)"})
 		return
 	}
 
 	db := config.DB
+	now := time.Now()
 
-	// Check existing duplicate assignment
-	var existing models.TeachingAssignment
-	if err := db.Where("guru_id = ? AND subject_id = ? AND rombel_id = ?", input.GuruID, input.SubjectID, input.RombelID).First(&existing).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Guru sudah ditugaskan mengampu mata pelajaran ini di kelas tersebut"})
+	var createdAssignments []models.TeachingAssignment
+	var skippedCount int
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		// Bulk check existing assignments for this (guru, subject) across all target rombels in 1 single query
+		var existingList []models.TeachingAssignment
+		if err := tx.Where("guru_id = ? AND subject_id = ? AND rombel_id IN ?", input.GuruID, input.SubjectID, targetRombelIDs).
+			Find(&existingList).Error; err != nil {
+			return err
+		}
+
+		existingMap := make(map[string]bool, len(existingList))
+		for _, ex := range existingList {
+			existingMap[ex.RombelID] = true
+		}
+
+		for _, rombelID := range targetRombelIDs {
+			if existingMap[rombelID] {
+				skippedCount++
+				continue
+			}
+
+			assign := models.TeachingAssignment{
+				ID:               uuid.NewString(),
+				GuruID:           input.GuruID,
+				SubjectID:        input.SubjectID,
+				RombelID:         rombelID,
+				JamPerMinggu:     input.JamPerMinggu,
+				IsManualOverride: true,
+				CreatedAt:        now,
+				UpdatedAt:        now,
+			}
+			createdAssignments = append(createdAssignments, assign)
+		}
+
+		if len(createdAssignments) > 0 {
+			if err := tx.CreateInBatches(createdAssignments, 100).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membuat penugasan mengajar: " + err.Error()})
 		return
 	}
 
-	now := time.Now()
-	assign := models.TeachingAssignment{
-		ID:               uuid.NewString(),
-		GuruID:           input.GuruID,
-		SubjectID:        input.SubjectID,
-		RombelID:         input.RombelID,
-		JamPerMinggu:     input.JamPerMinggu,
-		IsManualOverride: true,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-
-	if err := db.Create(&assign).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membuat penugasan mengajar: " + err.Error()})
+	if len(createdAssignments) == 0 && skippedCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": "Semua kelas yang dipilih sudah memiliki penugasan untuk guru dan mata pelajaran ini",
+		})
 		return
 	}
 
@@ -791,10 +846,27 @@ func (ctrl *AdminMasterController) CreateTeachingAssignment(c *gin.Context) {
 		_ = config.RDB.Del(config.RedisCtx, "dashboard:stats").Err()
 	}
 
+	var msg string
+	if len(createdAssignments) == 1 && skippedCount == 0 {
+		msg = "Penugasan mengajar berhasil ditambahkan secara manual"
+	} else if skippedCount > 0 {
+		msg = fmt.Sprintf("%d penugasan mengajar berhasil ditambahkan (%d kelas dilewati karena sudah ada)", len(createdAssignments), skippedCount)
+	} else {
+		msg = fmt.Sprintf("%d penugasan mengajar berhasil ditambahkan", len(createdAssignments))
+	}
+
+	var firstAssign *models.TeachingAssignment
+	if len(createdAssignments) > 0 {
+		firstAssign = &createdAssignments[0]
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"status":     "success",
-		"message":    "Penugasan mengajar berhasil ditambahkan secara manual",
-		"assignment": assign,
+		"status":        "success",
+		"message":       msg,
+		"assignment":    firstAssign,
+		"assignments":   createdAssignments,
+		"created_count": len(createdAssignments),
+		"skipped_count": skippedCount,
 	})
 }
 
@@ -1009,6 +1081,136 @@ func (ctrl *AdminMasterController) BulkUpdateSubjectKelompok(c *gin.Context) {
 	})
 }
 
+// ReorderSubjectItem represents single subject order payload
+type ReorderSubjectItem struct {
+	ID       string  `json:"id" binding:"required"`
+	Urutan   int     `json:"urutan"`
+	Kelompok *string `json:"kelompok"`
+}
+
+type ReorderSubjectsInput struct {
+	Orders []ReorderSubjectItem `json:"orders" binding:"required"`
+}
+
+func (ctrl *AdminMasterController) ReorderSubjects(c *gin.Context) {
+	var input ReorderSubjectsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Format data urutan mata pelajaran tidak valid"})
+		return
+	}
+
+	if len(input.Orders) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Daftar urutan mata pelajaran kosong"})
+		return
+	}
+
+	db := config.DB
+	tx := db.Begin()
+
+	// Single query batch update untuk PostgreSQL (VALUES syntax)
+	valParts := make([]string, 0, len(input.Orders))
+	args := make([]interface{}, 0, len(input.Orders)*3)
+	for _, item := range input.Orders {
+		valParts = append(valParts, "(?::varchar, ?::int, ?::varchar)")
+		var kelompokVal interface{}
+		if item.Kelompok != nil && strings.TrimSpace(*item.Kelompok) != "" {
+			kelompokVal = strings.TrimSpace(*item.Kelompok)
+		}
+		args = append(args, item.ID, item.Urutan, kelompokVal)
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE subjects AS s
+		SET urutan = v.urutan,
+		    kelompok = COALESCE(v.kelompok, s.kelompok),
+		    is_manual_override = CASE WHEN v.kelompok IS NOT NULL THEN true ELSE s.is_manual_override END,
+		    updated_at = NOW()
+		FROM (VALUES %s) AS v(id, urutan, kelompok)
+		WHERE s.id = v.id
+	`, strings.Join(valParts, ", "))
+
+	if err := tx.Exec(query, args...).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan urutan mata pelajaran: " + err.Error()})
+		return
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan transaksi urutan: " + err.Error()})
+		return
+	}
+
+	if config.RDB != nil {
+		_ = config.RDB.Del(config.RedisCtx, "master:subjects", "dashboard:stats").Err()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("Berhasil memperbarui urutan %d mata pelajaran", len(input.Orders)),
+	})
+}
+
+type ReorderSubjectGroupItem struct {
+	Kode   string `json:"kode" binding:"required"`
+	Urutan int    `json:"urutan"`
+}
+
+type ReorderSubjectGroupsInput struct {
+	Orders []ReorderSubjectGroupItem `json:"orders" binding:"required"`
+}
+
+func (ctrl *AdminMasterController) ReorderSubjectGroups(c *gin.Context) {
+	var input ReorderSubjectGroupsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Format data urutan kelompok tidak valid"})
+		return
+	}
+
+	if len(input.Orders) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Daftar urutan kelompok kosong"})
+		return
+	}
+
+	db := config.DB
+	tx := db.Begin()
+
+	// Single query batch update untuk subject_groups
+	valParts := make([]string, 0, len(input.Orders))
+	args := make([]interface{}, 0, len(input.Orders)*2)
+	for _, item := range input.Orders {
+		valParts = append(valParts, "(?::varchar, ?::int)")
+		args = append(args, strings.TrimSpace(item.Kode), item.Urutan)
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE subject_groups AS sg
+		SET urutan = v.urutan,
+		    updated_at = NOW()
+		FROM (VALUES %s) AS v(kode, urutan)
+		WHERE LOWER(sg.kode) = LOWER(v.kode)
+	`, strings.Join(valParts, ", "))
+
+	if err := tx.Exec(query, args...).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan urutan kelompok: " + err.Error()})
+		return
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan transaksi urutan kelompok: " + err.Error()})
+		return
+	}
+
+	if config.RDB != nil {
+		_ = config.RDB.Del(config.RedisCtx, "master:subjects", "dashboard:stats").Err()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("Berhasil memperbarui urutan %d kelompok mata pelajaran", len(input.Orders)),
+	})
+}
+
 // SubjectGroupSummaryItem represents aggregate stats for subject groups
 type SubjectGroupSummaryItem struct {
 	Kode      string           `json:"kode"`
@@ -1026,7 +1228,7 @@ func (ctrl *AdminMasterController) GetSubjectGroupsSummary(c *gin.Context) {
 	_ = db.Order("urutan ASC, kode ASC").Find(&dbGroups).Error
 
 	var subjects []models.Subject
-	if err := db.Order("kelompok ASC, nama ASC").Find(&subjects).Error; err != nil {
+	if err := db.Order("kelompok ASC, urutan ASC, nama ASC").Find(&subjects).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat mata pelajaran: " + err.Error()})
 		return
 	}

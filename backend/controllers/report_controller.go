@@ -174,7 +174,8 @@ func (ctrl *ReportController) GetStudentReportPDF(c *gin.Context) {
 	c.Data(http.StatusOK, "application/pdf", pdfBytes)
 }
 
-// GetRombelReportZip downloads all student PDFs in a rombel as a ZIP archive
+// GetRombelReportZip downloads all student PDFs in a rombel as a streaming ZIP archive
+// Streams directly to c.Writer to minimize RAM usage to only ~3MB instead of retaining all PDFs in memory.
 func (ctrl *ReportController) GetRombelReportZip(c *gin.Context) {
 	rombelID := c.Param("rombel_id")
 	semesterID := c.Query("semester_id")
@@ -184,19 +185,24 @@ func (ctrl *ReportController) GetRombelReportZip(c *gin.Context) {
 		return
 	}
 
-	zipBytes, zipFilename, err := ctrl.reportService.GenerateRombelZip(db, rombelID, semesterID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"status":  "error",
-			"message": "Gagal membuat file ZIP: " + err.Error(),
-		})
+	var rombel models.Rombel
+	if err := db.Select("id, name").Where("id = ?", rombelID).First(&rombel).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Rombongan belajar tidak ditemukan"})
 		return
 	}
 
+	zipFilename := fmt.Sprintf("Rapor_Mid_%s.zip", rombel.Name)
 	c.Header("Content-Type", "application/zip")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", zipFilename))
-	c.Header("Content-Length", fmt.Sprintf("%d", len(zipBytes)))
-	c.Data(http.StatusOK, "application/zip", zipBytes)
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+
+	_, err := ctrl.reportService.StreamRombelZip(db, rombelID, semesterID, c.Writer)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
 }
 
 // GetGradeProgress returns real-time completion tracking per subject & rombel

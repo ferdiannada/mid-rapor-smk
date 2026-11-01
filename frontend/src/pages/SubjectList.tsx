@@ -15,6 +15,7 @@ import {
   X,
   Info,
   ShieldCheck,
+  Target,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { masterService } from '../services/master.service';
@@ -330,6 +331,12 @@ export const SubjectList: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          <Link to="/learning-objectives">
+            <M3Button variant="tonal" size="sm" icon={<Target className="w-3.5 h-3.5" />}>
+              Tujuan Pembelajaran (TP)
+            </M3Button>
+          </Link>
+
           <Link to="/settings/subject-groups">
             <M3Button variant="tonal" size="sm" icon={<Layers className="w-3.5 h-3.5" />}>
               Kelola Kelompok Mapel

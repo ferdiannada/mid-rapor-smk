@@ -504,19 +504,64 @@ export const Reports: React.FC = () => {
             <div className="w-full overflow-x-auto pb-4">
               <div className="rapor-paper min-w-[620px] max-w-[800px] bg-white text-black p-4 sm:p-8 md:p-12 rounded-3xl shadow-m3-elevation-2 border border-slate-200 font-serif leading-relaxed text-sm mx-auto">
                 {/* Kop Surat Sekolah */}
-                <div className="text-center border-b-4 border-double border-black pb-3 mb-5">
-                  <h3 className="text-xs font-bold uppercase tracking-wider m-0">
-                    Pemerintah Provinsi Daerah Khusus Ibukota Jakarta
-                  </h3>
-                  <h3 className="text-xs font-bold uppercase tracking-wider m-0">
-                    Dinas Pendidikan
-                  </h3>
-                  <h1 className="text-lg font-black uppercase m-0.5 tracking-wide">
-                    {reportData.sekolah_nama}
-                  </h1>
-                  <p className="text-[11px] italic text-slate-600 m-0">
-                    {reportData.sekolah_alamat} • NPSN: {reportData.sekolah_npsn}
-                  </p>
+                <div className="border-b-4 border-double border-black pb-3 mb-5">
+                  <div className="flex items-center justify-between gap-3">
+                    {reportData.logo_kiri ? (
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 flex items-center justify-center">
+                        <img
+                          src={reportData.logo_kiri}
+                          alt="Logo Sekolah"
+                          className="max-h-full max-w-full object-contain"
+                        />
+                      </div>
+                    ) : null}
+
+                    <div className="flex-1 text-center min-w-0">
+                      {reportData.kop_baris_1 && (
+                        <h3 className="text-xs sm:text-sm font-bold uppercase tracking-wider m-0 leading-tight">
+                          {reportData.kop_baris_1}
+                        </h3>
+                      )}
+                      {reportData.kop_baris_2 && (
+                        <h3 className="text-xs sm:text-sm font-bold uppercase tracking-wider m-0 leading-tight">
+                          {reportData.kop_baris_2}
+                        </h3>
+                      )}
+                      {reportData.kop_baris_3 && (
+                        <h4 className="text-[11px] font-bold uppercase tracking-wider m-0 text-slate-800 leading-tight">
+                          {reportData.kop_baris_3}
+                        </h4>
+                      )}
+                      <h1 className="text-base sm:text-lg font-black uppercase m-0.5 tracking-wide text-black leading-tight">
+                        {reportData.sekolah_nama}
+                      </h1>
+                      <p className="text-[10.5px] italic text-slate-700 m-0 leading-tight">
+                        {reportData.sekolah_alamat}
+                        {reportData.sekolah_kecamatan ? `, Kec. ${reportData.sekolah_kecamatan}` : ''}
+                        {reportData.sekolah_kabupaten ? `, ${reportData.sekolah_kabupaten}` : ''}
+                        {reportData.sekolah_kode_pos ? ` ${reportData.sekolah_kode_pos}` : ''}
+                      </p>
+                      <p className="text-[10px] text-slate-600 m-0 leading-tight">
+                        {reportData.sekolah_telepon ? `Telp: ${reportData.sekolah_telepon} ` : ''}
+                        {reportData.sekolah_email ? `• Email: ${reportData.sekolah_email} ` : ''}
+                        {reportData.sekolah_website ? `• Web: ${reportData.sekolah_website} ` : ''}
+                        • NPSN: {reportData.sekolah_npsn}
+                        {reportData.sekolah_nss ? ` • NSS: ${reportData.sekolah_nss}` : ''}
+                      </p>
+                    </div>
+
+                    {reportData.logo_kanan ? (
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 flex items-center justify-center">
+                        <img
+                          src={reportData.logo_kanan}
+                          alt="Logo Pemda"
+                          className="max-h-full max-w-full object-contain"
+                        />
+                      </div>
+                    ) : reportData.logo_kiri ? (
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 pointer-events-none opacity-0" aria-hidden="true" />
+                    ) : null}
+                  </div>
                 </div>
 
                 {/* Judul Dokumen */}

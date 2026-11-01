@@ -33,6 +33,9 @@ func main() {
 	// Seed Admin User jika belum ada
 	seedAdminUser()
 
+	// Seed Profil Identitas Sekolah jika belum ada
+	seedSchoolProfile()
+
 	// Inisialisasi Router
 	router := routes.SetupRouter(cfg)
 
@@ -104,6 +107,42 @@ func seedAdminUser() {
 			log.Printf("Warning: Gagal membuat admin default: %v", err)
 		} else {
 			log.Println("Admin default berhasil dibuat: NIP/NIK='admin' atau Email='admin@smk.sch.id', Password='admin123'")
+		}
+	}
+}
+
+func seedSchoolProfile() {
+	db := config.DB
+	if db == nil {
+		return
+	}
+
+	_ = db.AutoMigrate(&models.SchoolProfile{})
+
+	var count int64
+	db.Model(&models.SchoolProfile{}).Count(&count)
+	if count == 0 {
+		defaultProfile := models.SchoolProfile{
+			ID:                "default",
+			NamaSekolah:       "SMK NEGERI 1 KOTA",
+			NPSN:              "20108921",
+			BentukPendidikan:  "SMK",
+			StatusSekolah:     "Negeri",
+			Alamat:            "Jl. Pendidikan No. 45, Kompleks Edukasi",
+			KabupatenKota:     "Jakarta",
+			Provinsi:          "DKI Jakarta",
+			KopBaris1:         "PEMERINTAH PROVINSI DAERAH KHUSUS IBUKOTA JAKARTA",
+			KopBaris2:         "DINAS PENDIDIKAN",
+			KepalaSekolahNama: "Drs. H. Mulyadi, M.Pd.",
+			KepalaSekolahNIP:  "196805121994031004",
+			TitimangsaTempat:  "Jakarta",
+			CreatedAt:         time.Now(),
+			UpdatedAt:         time.Now(),
+		}
+		if err := db.Create(&defaultProfile).Error; err != nil {
+			log.Printf("Warning: Gagal seed profil sekolah default: %v", err)
+		} else {
+			log.Println("Profil identitas sekolah default berhasil dibuat.")
 		}
 	}
 }

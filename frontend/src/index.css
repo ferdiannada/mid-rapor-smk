@@ -41,6 +41,9 @@
   --color-m3-outline: #73777F;
   --color-m3-outline-variant: #C3C6CF;
 
+  --color-m3-inverse-surface: #1E293B;
+  --color-m3-inverse-on-surface: #F8FAFC;
+
   /* M3 Tonal Elevations */
   --shadow-m3-elevation-1: 0px 1px 2px 0px rgba(0, 0, 0, 0.15), 0px 1px 3px 1px rgba(0, 0, 0, 0.08);
   --shadow-m3-elevation-2: 0px 1px 2px 0px rgba(0, 0, 0, 0.15), 0px 2px 6px 2px rgba(0, 0, 0, 0.08);

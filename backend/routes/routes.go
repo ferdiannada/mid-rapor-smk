@@ -18,6 +18,15 @@ func SetupRouter(cfg *config.Config) *gin.Engine {
 
 	router := gin.Default()
 
+	// Set trusted proxies so c.ClientIP() gets actual client IP behind reverse proxy
+	_ = router.SetTrustedProxies([]string{
+		"127.0.0.1",
+		"::1",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	})
+
 	// Apply CORS
 	router.Use(middleware.CORSMiddleware(cfg))
 
@@ -33,6 +42,14 @@ func SetupRouter(cfg *config.Config) *gin.Engine {
 		})
 	})
 
+	// Ultra-lightweight heartbeat ping for offline/online client detection (zero-body 204)
+	router.GET("/api/v1/ping", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+	router.HEAD("/api/v1/ping", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
 	authCtrl := controllers.NewAuthController(cfg)
 	dapodikConfigCtrl := controllers.NewDapodikConfigController(cfg)
 	syncCtrl := controllers.NewSyncController()
@@ -44,6 +61,7 @@ func SetupRouter(cfg *config.Config) *gin.Engine {
 	waliKelasCtrl := controllers.NewWaliKelasController()
 	reportCtrl := controllers.NewReportController()
 	adminMasterCtrl := controllers.NewAdminMasterController()
+	schoolCtrl := controllers.NewSchoolController()
 
 	v1 := router.Group("/api/v1")
 	{
@@ -58,6 +76,7 @@ func SetupRouter(cfg *config.Config) *gin.Engine {
 
 		protected := v1.Group("")
 		protected.Use(authMiddleware)
+		protected.Use(middleware.IdempotencyMiddleware())
 		{
 			// Auth Profile & Password
 			protected.GET("/auth/me", authCtrl.GetMe)
@@ -68,6 +87,9 @@ func SetupRouter(cfg *config.Config) *gin.Engine {
 
 			// Semesters (Viewable by all, editable by admin)
 			protected.GET("/semesters", semesterCtrl.ListSemesters)
+
+			// Profil Identitas Sekolah (Viewable by all authenticated users for reports)
+			protected.GET("/school-profile", schoolCtrl.GetProfile)
 
 			// Master Data (Rombels, Students, Subjects, Assignments)
 			protected.GET("/rombels", dataMasterCtrl.GetRombels)
@@ -149,14 +171,20 @@ func SetupRouter(cfg *config.Config) *gin.Engine {
 
 				// 5. Mata Pelajaran (Manual)
 				adminOnly.POST("/subjects", adminMasterCtrl.CreateSubject)
+				adminOnly.PUT("/subjects/reorder", adminMasterCtrl.ReorderSubjects)
 				adminOnly.PUT("/subjects/bulk-kelompok", adminMasterCtrl.BulkUpdateSubjectKelompok)
 				adminOnly.PUT("/subjects/:id", adminMasterCtrl.UpdateSubject)
 				adminOnly.DELETE("/subjects/:id", adminMasterCtrl.DeleteSubject)
 
 				// 6. Kelompok Mata Pelajaran
 				adminOnly.POST("/subject-groups", adminMasterCtrl.CreateSubjectGroup)
+				adminOnly.PUT("/subject-groups/reorder", adminMasterCtrl.ReorderSubjectGroups)
 				adminOnly.PUT("/subject-groups/:kode", adminMasterCtrl.UpdateSubjectGroup)
 				adminOnly.DELETE("/subject-groups/:kode", adminMasterCtrl.DeleteSubjectGroup)
+
+				// 7. Pengelolaan Identitas Sekolah
+				adminOnly.PUT("/school-profile", schoolCtrl.UpdateProfile)
+				adminOnly.POST("/school-profile/logo", schoolCtrl.UploadLogo)
 			}
 		}
 	}

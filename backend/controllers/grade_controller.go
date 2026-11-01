@@ -99,9 +99,38 @@ func (ctrl *GradeController) GetGradesByRombelAndSubject(c *gin.Context) {
 		return
 	}
 
-	// 3. Get Learning Objectives (TP) for this subject
+	// 3. Get Learning Objectives (TP) for this subject & assigned teacher
 	var tps []models.LearningObjective
-	db.Where("subject_id = ?", subjectID).Order("urutan ASC, kode_tp ASC").Find(&tps)
+	var assignedGuruID string
+
+	if userRole == string(models.RoleGuru) {
+		if uid, exists := c.Get("user_id"); exists && uid != nil {
+			if uidStr, ok := uid.(string); ok && uidStr != "" {
+				assignedGuruID = uidStr
+			}
+		}
+	}
+
+	if assignedGuruID == "" {
+		var assignment models.TeachingAssignment
+		if err := db.Where("rombel_id = ? AND subject_id = ? AND (semester_id = ? OR semester_id IS NULL OR semester_id = '')",
+			rombelID, subjectID, sem.ID).First(&assignment).Error; err == nil {
+			assignedGuruID = assignment.GuruID
+		}
+	}
+
+	if assignedGuruID != "" {
+		db.Where("subject_id = ? AND guru_id = ?", subjectID, assignedGuruID).
+			Order("urutan ASC, kode_tp ASC").
+			Find(&tps)
+	}
+
+	// Fallback to legacy/global TPs if teacher hasn't created their own TPs yet
+	if len(tps) == 0 {
+		db.Where("subject_id = ? AND (guru_id IS NULL OR guru_id = '')", subjectID).
+			Order("urutan ASC, kode_tp ASC").
+			Find(&tps)
+	}
 
 	// 4. Get Students in Rombel
 	var students []models.Student
@@ -262,10 +291,15 @@ func (ctrl *GradeController) BatchSaveGrades(c *gin.Context) {
 		return
 	}
 
-	// Load TPs for description generation
+	// Load TPs for description generation scoped to this teacher
 	var tps []models.LearningObjective
-	db.Where("subject_id = ?", input.SubjectID).Find(&tps)
-	tpMap := make(map[string]models.LearningObjective)
+	if err := db.Where("subject_id = ? AND guru_id = ?", input.SubjectID, assignment.GuruID).
+		Order("urutan ASC, kode_tp ASC").Find(&tps).Error; err != nil || len(tps) == 0 {
+		// Fallback to legacy/global TPs if teacher hasn't created their own TPs yet
+		db.Where("subject_id = ? AND (guru_id IS NULL OR guru_id = '')", input.SubjectID).
+			Order("urutan ASC, kode_tp ASC").Find(&tps)
+	}
+	tpMap := make(map[string]models.LearningObjective, len(tps))
 	for _, tp := range tps {
 		tpMap[tp.ID] = tp
 	}
@@ -278,9 +312,35 @@ func (ctrl *GradeController) BatchSaveGrades(c *gin.Context) {
 		studentMap[s.ID] = s.Name
 	}
 
-	// Load existing grades for this rombel, subject, and semester in 1 single query
+	// Mulai transaksi database lebih awal untuk mengunci proses dan memastikan konsistensi ID
+	tx := db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Gunakan PostgreSQL transaction-level advisory lock untuk kombinasi (rombel, mapel, semester)
+	// guna mencegah race condition antar request paralel saat data nilai pertama kali dibuat
+	if tx.Dialector.Name() == "postgres" {
+		lockKey := fmt.Sprintf("grades:%s:%s:%s", input.RombelID, input.SubjectID, sem.ID)
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", lockKey).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memperoleh kunci transaksi nilai: " + err.Error()})
+			return
+		}
+	}
+
+	// Ambil data nilai yang sudah ada di dalam transaksi dengan pessimistic lock (FOR UPDATE)
 	var existingGrades []models.Grade
-	db.Where("rombel_id = ? AND subject_id = ? AND semester_id = ?", input.RombelID, input.SubjectID, sem.ID).Find(&existingGrades)
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("rombel_id = ? AND subject_id = ? AND semester_id = ?", input.RombelID, input.SubjectID, sem.ID).
+		Find(&existingGrades).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membaca data nilai yang ada: " + err.Error()})
+		return
+	}
+
 	existingGradeMap := make(map[string]models.Grade, len(existingGrades))
 	for _, eg := range existingGrades {
 		existingGradeMap[eg.StudentID] = eg
@@ -295,15 +355,27 @@ func (ctrl *GradeController) BatchSaveGrades(c *gin.Context) {
 		gradeID := uuid.New().String()
 		if eg, exists := existingGradeMap[sg.StudentID]; exists {
 			gradeID = eg.ID
+		} else {
+			// Catat ke map agar data duplikat dalam batch input yang sama memakai ID yang sama
+			existingGradeMap[sg.StudentID] = models.Grade{ID: gradeID}
 		}
 
 		// Convert TP scores to GradeDetails
 		var details []models.GradeDetail
-		for _, tp := range sg.TPScores {
-			details = append(details, models.GradeDetail{
-				LearningObjectiveID: tp.LearningObjectiveID,
-				Nilai:               tp.Nilai,
-			})
+		if len(sg.TPScores) > 0 {
+			for _, tp := range sg.TPScores {
+				details = append(details, models.GradeDetail{
+					LearningObjectiveID: tp.LearningObjectiveID,
+					Nilai:               tp.Nilai,
+				})
+			}
+		} else if len(tps) > 0 {
+			for _, tp := range tps {
+				details = append(details, models.GradeDetail{
+					LearningObjectiveID: tp.ID,
+					Nilai:               0,
+				})
+			}
 		}
 
 		// Auto-calculate final score if not provided
@@ -352,13 +424,6 @@ func (ctrl *GradeController) BatchSaveGrades(c *gin.Context) {
 			}
 		}
 	}
-
-	tx := db.Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
 
 	// 1. Atomic Upsert Grades (prevents race condition & eliminates N queries)
 	if len(gradesToSave) > 0 {
@@ -421,6 +486,7 @@ func (ctrl *GradeController) BatchSaveGrades(c *gin.Context) {
 
 type GenerateDescriptionInput struct {
 	SubjectID string              `json:"subject_id" binding:"required"`
+	GuruID    string              `json:"guru_id"`
 	Students  []InputStudentGrade `json:"students" binding:"required"`
 }
 
@@ -437,8 +503,30 @@ func (ctrl *GradeController) GenerateAutoDescriptions(c *gin.Context) {
 
 	db := config.DB
 	var tps []models.LearningObjective
-	db.Where("subject_id = ?", input.SubjectID).Find(&tps)
-	tpMap := make(map[string]models.LearningObjective)
+
+	userRole, _ := c.Get("user_role")
+	userID, _ := c.Get("user_id")
+
+	var targetGuruID string
+	if userRole == string(models.RoleGuru) && userID != nil {
+		if uid, ok := userID.(string); ok && uid != "" {
+			targetGuruID = uid
+		}
+	} else if input.GuruID != "" {
+		targetGuruID = input.GuruID
+	}
+
+	if targetGuruID != "" {
+		db.Where("subject_id = ? AND guru_id = ?", input.SubjectID, targetGuruID).
+			Order("urutan ASC, kode_tp ASC").Find(&tps)
+	}
+
+	if len(tps) == 0 {
+		db.Where("subject_id = ? AND (guru_id IS NULL OR guru_id = '')", input.SubjectID).
+			Order("urutan ASC, kode_tp ASC").Find(&tps)
+	}
+
+	tpMap := make(map[string]models.LearningObjective, len(tps))
 	for _, tp := range tps {
 		tpMap[tp.ID] = tp
 	}
@@ -452,14 +540,28 @@ func (ctrl *GradeController) GenerateAutoDescriptions(c *gin.Context) {
 	var results []GeneratedResult
 	for _, sg := range input.Students {
 		var details []models.GradeDetail
-		for _, tp := range sg.TPScores {
-			details = append(details, models.GradeDetail{
-				LearningObjectiveID: tp.LearningObjectiveID,
-				Nilai:               tp.Nilai,
-			})
+		if len(sg.TPScores) > 0 {
+			for _, tp := range sg.TPScores {
+				details = append(details, models.GradeDetail{
+					LearningObjectiveID: tp.LearningObjectiveID,
+					Nilai:               tp.Nilai,
+				})
+			}
+		} else if len(tps) > 0 {
+			for _, tp := range tps {
+				details = append(details, models.GradeDetail{
+					LearningObjectiveID: tp.ID,
+					Nilai:               0,
+				})
+			}
 		}
 
-		finalScore := ctrl.gradeService.CalculateNilaiAkhir(details)
+		finalScore := 0.0
+		if sg.NilaiAkhir != nil && *sg.NilaiAkhir > 0 {
+			finalScore = *sg.NilaiAkhir
+		} else {
+			finalScore = ctrl.gradeService.CalculateNilaiAkhir(details)
+		}
 		desc := ctrl.gradeService.GenerateDeskripsiCapaian("", details, tpMap)
 
 		results = append(results, GeneratedResult{

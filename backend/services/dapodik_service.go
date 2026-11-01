@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"rapor-smk-backend/config"
 	"rapor-smk-backend/models"
 )
@@ -288,20 +289,27 @@ func PurgeMockData(db *gorm.DB) error {
 
 func (s *DapodikService) SyncDataWithOptions(opts SyncOptions, updatedBy string) (*SyncSummary, error) {
 	// Distributed lock via Redis with fallback to local atomic flag
+	var redisLockAcquired bool
 	if config.RDB != nil {
 		acquired, err := config.RDB.SetNX(config.RedisCtx, "lock:dapodik_sync", "active", 15*time.Minute).Result()
 		if err == nil && !acquired {
 			return nil, fmt.Errorf("proses sinkronisasi Dapodik sedang berlangsung di server. Mohon tunggu beberapa saat...")
 		}
-		if acquired {
-			defer config.RDB.Del(config.RedisCtx, "lock:dapodik_sync")
-		}
+		redisLockAcquired = acquired
 	}
 
 	if !atomic.CompareAndSwapInt32(&syncInProgressFlag, 0, 1) {
+		if redisLockAcquired && config.RDB != nil {
+			_ = config.RDB.Del(config.RedisCtx, "lock:dapodik_sync").Err()
+		}
 		return nil, fmt.Errorf("proses sinkronisasi Dapodik sedang berlangsung oleh permintaan lain. Mohon tunggu...")
 	}
-	defer atomic.StoreInt32(&syncInProgressFlag, 0)
+	defer func() {
+		atomic.StoreInt32(&syncInProgressFlag, 0)
+		if redisLockAcquired && config.RDB != nil {
+			_ = config.RDB.Del(config.RedisCtx, "lock:dapodik_sync").Err()
+		}
+	}()
 
 	startTime := time.Now()
 	summary := &SyncSummary{
@@ -600,8 +608,13 @@ func (s *DapodikService) syncGTK(db *gorm.DB, dryRun bool, preserveManual bool) 
 			}
 		}
 
-		for _, u := range usersToUpdate {
-			if err := tx.Save(&u).Error; err != nil {
+		if len(usersToUpdate) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"name", "nip_nik", "phone", "dapodik_data_hash", "dapodik_last_synced_at", "updated_at",
+				}),
+			}).CreateInBatches(usersToUpdate, 100).Error; err != nil {
 				return err
 			}
 		}
@@ -713,8 +726,13 @@ func (s *DapodikService) syncRombel(db *gorm.DB, dryRun bool, preserveManual boo
 				return err
 			}
 		}
-		for _, r := range toUpdate {
-			if err := tx.Save(&r).Error; err != nil {
+		if len(toUpdate) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"name", "tingkat", "wali_kelas_id", "dapodik_data_hash", "updated_at",
+				}),
+			}).CreateInBatches(toUpdate, 100).Error; err != nil {
 				return err
 			}
 		}
@@ -833,8 +851,15 @@ func (s *DapodikService) syncSiswa(db *gorm.DB, dryRun bool, preserveManual bool
 				return err
 			}
 		}
-		for _, s := range toUpdate {
-			if err := tx.Save(&s).Error; err != nil {
+		if len(toUpdate) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"name", "rombel_id", "nisn", "jenis_kelamin",
+					"tanggal_lahir", "tempat_lahir", "dapodik_data_hash",
+					"dapodik_last_synced_at", "updated_at",
+				}),
+			}).CreateInBatches(toUpdate, 100).Error; err != nil {
 				return err
 			}
 		}
@@ -935,8 +960,13 @@ func (s *DapodikService) syncPembelajaran(db *gorm.DB, dryRun bool, preserveManu
 					return err
 				}
 			}
-			for _, s := range subjectsToUpdate {
-				if err := tx.Save(&s).Error; err != nil {
+			if len(subjectsToUpdate) > 0 {
+				if err := tx.Clauses(clause.OnConflict{
+					Columns: []clause.Column{{Name: "id"}},
+					DoUpdates: clause.AssignmentColumns([]string{
+						"nama", "kelompok", "dapodik_data_hash", "updated_at",
+					}),
+				}).CreateInBatches(subjectsToUpdate, 100).Error; err != nil {
 					return err
 				}
 			}
@@ -1033,8 +1063,13 @@ func (s *DapodikService) syncPembelajaran(db *gorm.DB, dryRun bool, preserveManu
 				return err
 			}
 		}
-		for _, a := range assignmentsToUpdate {
-			if err := tx.Save(&a).Error; err != nil {
+		if len(assignmentsToUpdate) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"jam_per_minggu", "dapodik_pembelajaran_id", "dapodik_data_hash", "updated_at",
+				}),
+			}).CreateInBatches(assignmentsToUpdate, 100).Error; err != nil {
 				return err
 			}
 		}
